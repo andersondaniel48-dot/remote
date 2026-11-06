@@ -15,7 +15,9 @@ The phone talks to the TVs over Wi‑Fi using Android's developer connection (AD
 - **Switch TVs:** tap a TV's name at the top, or swipe left or right.
 - **See what's on:** the big card at the top shows the open app, the title and whether it's playing, with play/pause, skip and volume buttons.
 - **Search:** tap the search bar, or the mic to speak. Choose **Everywhere** or a specific app (YouTube, Netflix…). When the search is on the TV, the touchpad opens so you can pick a result.
-- **Open apps:** tap a tile. Hold a tile to pin it to the front. The apps you use most move up on their own.
+- **Favorites:** tap **Edit** next to Favorites, then tap the ☆ on any app. Use ◀ ▶ to reorder and ✕ to remove. You can also hold any app tile.
+- **Guide:** save a link to a show, movie, YouTube video or channel, and tapping it opens that exact thing on the TV. You can add links three ways: tap **+ Add** and paste; use Share → TV Hub; or open the address shown in the Add sheet (e.g. `http://192.168.1.40:8765/add`) on your own phone or computer and paste links there. Hold a Guide card to remove it.
+- **Open apps:** tap a tile. The apps you use most move up on their own.
 - **Remote:** the button at the bottom opens a touchpad. Swipe to move, tap to select, hold for the menu. Switch to **Buttons** if you'd rather have arrows.
 - **Volume:** the phone's own volume buttons control the selected TV.
 - **Type** and **Photos** are in the bottom dock.
