@@ -13,8 +13,8 @@ android {
         minSdk = 24
         targetSdk = 35
         // Bump versionCode when you change the app: TV Hub then offers to update its player on each TV.
-        versionCode = 3
-        versionName = "3.0"
+        versionCode = 4
+        versionName = "4.0"
     }
 
     // A fixed key (checked in) so every build can update the phone and TVs in place.

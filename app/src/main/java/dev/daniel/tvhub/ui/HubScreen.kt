@@ -9,11 +9,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -129,7 +130,7 @@ fun HubScreen(hub: TvHub, activity: MainActivity) {
                     }
                     SheetKind.REMOTE -> RemoteSheet(hub, selected, remoteHint)
                     SheetKind.TYPE -> TypeSheet(hub, selected)
-                    SheetKind.PHOTOS -> PhotosSheet(hub, selected)
+                    SheetKind.PHOTOS -> CastSheet(hub, selected)
                     SheetKind.GUIDE -> GuideSheet(hub, selected) { sheet = null }
                 }
             }
@@ -147,9 +148,19 @@ private fun TopBar(
     onSettingsTap: () -> Unit,
     onSettingsHold: () -> Unit,
 ) {
-    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            tvs.forEachIndexed { i, tv ->
+    val list = rememberLazyListState()
+    // Keep the selected TV's name in view (e.g. after swiping to the third TV).
+    LaunchedEffect(selectedIndex, tvs.size) {
+        if (tvs.isNotEmpty()) list.animateScrollToItem(selectedIndex.coerceIn(0, tvs.size - 1))
+    }
+    Row(Modifier.fillMaxWidth().padding(end = 4.dp, top = 8.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        LazyRow(
+            state = list,
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            itemsIndexed(tvs, key = { _, t -> t.config.id }) { i, tv ->
                 val sel = i == selectedIndex
                 Row(
                     Modifier.height(40.dp).clip(CircleShape)
@@ -160,7 +171,7 @@ private fun TopBar(
                 ) {
                     StatusDot(tv)
                     Spacer(Modifier.width(8.dp))
-                    Text(tv.config.name, fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium, color = if (sel) Color.White else TextHi)
+                    Text(tv.config.name, fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium, color = if (sel) Color.White else TextHi, maxLines = 1)
                 }
             }
         }
@@ -187,7 +198,7 @@ private fun Dock(modifier: Modifier, onType: () -> Unit, onRemote: () -> Unit, o
             Spacer(Modifier.width(10.dp))
             Text("Remote", color = Color.White, fontWeight = FontWeight.Bold)
         }
-        DockItem(HubIcons.Photo, "Photos", onClick = onPhotos)
+        DockItem(HubIcons.Cast, "Cast", onClick = onPhotos)
     }
 }
 

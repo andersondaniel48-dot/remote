@@ -142,6 +142,30 @@ class TvStore(context: Context) {
         prefs.edit().putString("guide", a.toString()).apply()
     }
 
+    fun recents(): List<RecentItem> {
+        val raw = prefs.getString("recents", null) ?: return emptyList()
+        return runCatching {
+            val a = JSONArray(raw)
+            (0 until a.length()).map { i ->
+                val o = a.getJSONObject(i)
+                RecentItem(
+                    id = o.getString("id"), pkg = o.getString("pkg"), appName = o.getString("app"), title = o.getString("title"),
+                    subtitle = o.optString("sub").ifEmpty { null }, image = o.optString("image").ifEmpty { null },
+                    link = o.optString("link").ifEmpty { null }, at = o.optLong("at"),
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    fun saveRecents(items: List<RecentItem>) {
+        val a = JSONArray()
+        items.forEach {
+            a.put(JSONObject().put("id", it.id).put("pkg", it.pkg).put("app", it.appName).put("title", it.title)
+                .put("sub", it.subtitle ?: "").put("image", it.image ?: "").put("link", it.link ?: "").put("at", it.at))
+        }
+        prefs.edit().putString("recents", a.toString()).apply()
+    }
+
     var volumeKeysControlTv: Boolean
         get() = prefs.getBoolean("volKeys", true)
         set(v) { prefs.edit().putBoolean("volKeys", v).apply() }

@@ -4,7 +4,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -72,6 +74,8 @@ fun TvHubTheme(content: @Composable () -> Unit) {
             large = RoundedCornerShape(28.dp),
             extraLarge = RoundedCornerShape(32.dp),
         ),
-        content = content,
-    )
+    ) {
+        // Everything not drawn on a Material surface (most of this app) defaults to light text.
+        CompositionLocalProvider(LocalContentColor provides TextHi, content = content)
+    }
 }

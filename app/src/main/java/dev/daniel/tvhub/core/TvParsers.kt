@@ -144,6 +144,31 @@ object TvParsers {
     fun parseVersionCode(out: String): Int? =
         Regex("versionCode=(\\d+)").find(out)?.groupValues?.get(1)?.toIntOrNull()
 
+    private val profileHints = Regex(
+        "who.?s watching|who is watching|choose (a |your )?profile|select (a |your )?profile|switch profiles?|add profile|manage profiles|edit profiles",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** Visible text and descriptions from a `uiautomator dump`. */
+    fun screenStrings(xml: String): List<String> =
+        Regex("(?:text|content-desc)=\"([^\"]*)\"").findAll(xml).map { unescapeXml(it.groupValues[1]) }.filter { it.isNotBlank() }.toList()
+
+    fun isProfilePicker(xml: String): Boolean = screenStrings(xml).any { profileHints.containsMatchIn(it) }
+
+    fun screenShowsQuery(xml: String, q: String): Boolean = screenStrings(xml).any { it.contains(q.trim(), ignoreCase = true) }
+
+    /** Text currently in the first visible text box, or null if there's no text box on screen. */
+    fun searchFieldText(xml: String): String? {
+        val node = Regex("<node[^>]*class=\"android\\.widget\\.EditText\"[^>]*>").find(xml)?.value ?: return null
+        val text = Regex("\\btext=\"([^\"]*)\"").find(node)?.groupValues?.get(1)?.let(::unescapeXml) ?: return ""
+        // A hint like "Search" shows as the text of an empty box.
+        val hint = Regex("\\bhint=\"([^\"]*)\"").find(node)?.groupValues?.get(1)
+        return if (text == hint || text.equals("search", true)) "" else text
+    }
+
+    private fun unescapeXml(s: String) =
+        s.replace("&quot;", "\"").replace("&apos;", "'").replace("&#39;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+
     /** Single-quotes a string for the Android shell. */
     fun q(s: String): String = "'" + s.replace("'", "'\\''") + "'"
 

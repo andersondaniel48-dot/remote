@@ -378,7 +378,7 @@ fun ColumnScope.TypeSheet(hub: TvHub, tv: TvState) {
 // ---------------------------------------------------------------- Photos
 
 @Composable
-fun ColumnScope.PhotosSheet(hub: TvHub, tv: TvState) {
+fun ColumnScope.CastSheet(hub: TvHub, tv: TvState) {
     val ctx = LocalContext.current
     val id = tv.config.id
     var granted by remember { mutableStateOf(PhoneMedia.hasPermission(ctx)) }
@@ -388,9 +388,10 @@ fun ColumnScope.PhotosSheet(hub: TvHub, tv: TvState) {
     val ready = (tv.receiverVersion ?: -1) >= BuildConfig.VERSION_CODE
     val casting = tv.now?.packageName == BuildConfig.APPLICATION_ID
 
+    val webAddress = remember { hub.webAddress() }
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text("Photos & videos", style = MaterialTheme.typography.headlineSmall)
+            Text("Cast to ${tv.config.name}", style = MaterialTheme.typography.headlineSmall)
             Text(
                 when {
                     tv.busy != null -> tv.busy
@@ -403,9 +404,29 @@ fun ColumnScope.PhotosSheet(hub: TvHub, tv: TvState) {
         }
         if (casting) OutlinedButton(onClick = { hub.stopCast(id) }) { Text("Stop") }
     }
-    Spacer(Modifier.height(12.dp))
+    Spacer(Modifier.height(14.dp))
+    if (webAddress != null) {
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(GlowSoft).padding(16.dp)) {
+            Text("FROM YOUR OWN PHONE OR COMPUTER", style = MaterialTheme.typography.labelSmall, color = TextHi.copy(alpha = 0.75f))
+            Spacer(Modifier.height(6.dp))
+            Text(webAddress, style = MaterialTheme.typography.titleLarge, color = Color.White)
+            Text(
+                "Open this in the browser on any device on your Wi‑Fi. Pick a TV, then send a photo or video, or paste a Netflix/YouTube/Disney+ link to play it.",
+                style = MaterialTheme.typography.bodySmall, color = TextHi.copy(alpha = 0.85f),
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+    }
+    Text(
+        if (tv.config.kind == TvKind.GOOGLE_TV) "Tip: ${tv.config.name} also has Chromecast built in. Tap the Cast icon in YouTube, Netflix or Photos on your own phone."
+        else "Tip: to mirror your own phone's screen, hold Home on the Fire TV remote → Mirroring.",
+        style = MaterialTheme.typography.bodySmall, color = TextLo,
+    )
+    Spacer(Modifier.height(16.dp))
+    Text("FROM THIS PHONE", style = MaterialTheme.typography.labelSmall, color = TextLo)
+    Spacer(Modifier.height(8.dp))
     val list = items
-    Box(Modifier.fillMaxWidth().heightIn(min = 200.dp, max = 460.dp)) {
+    Box(Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 300.dp)) {
         when {
             !granted -> Column(Modifier.fillMaxWidth().padding(vertical = 30.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("Let TV Hub see this phone's photos and videos.", color = TextLo)

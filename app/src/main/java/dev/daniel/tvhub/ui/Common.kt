@@ -10,7 +10,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -24,6 +26,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -111,7 +114,12 @@ fun BoxScope.HubSheet(visible: Boolean, onDismiss: () -> Unit, content: @Composa
                 },
                 contentAlignment = Alignment.Center,
             ) { Box(Modifier.size(width = 40.dp, height = 4.dp).clip(CircleShape).background(Line)) }
-            Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 20.dp), content = content)
+            Column(
+                Modifier.heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.85f).dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 20.dp, end = 20.dp, bottom = 20.dp),
+                content = content,
+            )
         }
     }
 }

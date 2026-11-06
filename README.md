@@ -16,6 +16,8 @@ The phone talks to the TVs over Wi‑Fi using Android's developer connection (AD
 - **See what's on:** the big card at the top shows the open app, the title and whether it's playing, with play/pause, skip and volume buttons.
 - **Search:** tap the search bar, or the mic to speak. Choose **Everywhere** or a specific app (YouTube, Netflix…). When the search is on the TV, the touchpad opens so you can pick a result.
 - **Favorites:** tap **Edit** next to Favorites, then tap the ☆ on any app. Use ◀ ▶ to reorder and ✕ to remove. You can also hold any app tile.
+- **Continue watching:** fills in by itself. Whatever's playing on any TV shows up here with its title and artwork. Tap a card to go back to it, tap ☆ to save it to your Guide, or hold it to remove it. If the app shared a direct link to the show, the card opens it straight away; otherwise TV Hub opens the app and searches for the title.
+- **Cast:** tap **Cast** in the bottom dock. Open the address it shows (e.g. `http://192.168.1.40:8765/`) on your own phone or computer to send photos, videos or links to any TV. Photos and videos stored on the TV Hub phone itself are listed below that.
 - **Guide:** save a link to a show, movie, YouTube video or channel, and tapping it opens that exact thing on the TV. You can add links three ways: tap **+ Add** and paste; use Share → TV Hub; or open the address shown in the Add sheet (e.g. `http://192.168.1.40:8765/add`) on your own phone or computer and paste links there. Hold a Guide card to remove it.
 - **Open apps:** tap a tile. The apps you use most move up on their own.
 - **Remote:** the button at the bottom opens a touchpad. Swipe to move, tap to select, hold for the menu. Switch to **Buttons** if you'd rather have arrows.

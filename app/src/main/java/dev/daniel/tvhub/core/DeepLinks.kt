@@ -55,6 +55,34 @@ object DeepLinks {
         return t
     }
 
+    /** A link for what an app is playing, from the media id / uri it reports (null if we can't tell). */
+    fun fromMedia(pkg: String, mediaId: String?, mediaUri: String?): String? {
+        mediaUri?.takeIf { it.startsWith("http://") || it.startsWith("https://") }?.let { return canonical(it) }
+        val id = mediaId?.trim().orEmpty()
+        val svc = services.firstOrNull { pkg in it.packages }?.name
+        return when {
+            svc == "YouTube" && Regex("^[A-Za-z0-9_-]{11}$").matches(id) -> "https://www.youtube.com/watch?v=$id"
+            svc == "Netflix" && Regex("^\\d{6,10}$").matches(id) -> "https://www.netflix.com/watch/$id"
+            id.startsWith("http://") || id.startsWith("https://") -> canonical(id)
+            else -> null
+        }
+    }
+
+    /** A Guide "link" that means: open [pkg] and search it for [query]. */
+    fun searchLink(pkg: String, query: String): String =
+        "tvhub://search?pkg=" + java.net.URLEncoder.encode(pkg, "UTF-8") + "&q=" + java.net.URLEncoder.encode(query, "UTF-8")
+
+    /** (package, query) if [url] is a [searchLink]. */
+    fun parseSearchLink(url: String): Pair<String, String>? {
+        if (!url.startsWith("tvhub://search?")) return null
+        val params = url.substringAfter('?').split('&').mapNotNull {
+            val i = it.indexOf('=')
+            if (i <= 0) null else it.substring(0, i) to java.net.URLDecoder.decode(it.substring(i + 1), "UTF-8")
+        }.toMap()
+        val pkg = params["pkg"] ?: return null
+        return pkg to (params["q"] ?: return null)
+    }
+
     fun commands(url: String, installed: Set<String>): List<String> {
         val q = TvParsers::q
         val svc = serviceFor(url)

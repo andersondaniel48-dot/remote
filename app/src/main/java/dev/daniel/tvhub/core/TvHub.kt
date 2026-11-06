@@ -175,6 +175,7 @@ class TvHub(private val ctx: Context) {
             }
             set(id) { it.copy(conn = Conn.ONLINE, power = power, now = now, error = null) }
             if (TvParsers.keyServerRunning(out) == false) conns[id]?.keyServerGone()
+            runCatching { maybeCapture(id, c, now) }
             if (!wasOnline || state(id)?.receiverVersion == null) fetchDetails(id, c)
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException) throw t
@@ -188,6 +189,7 @@ class TvHub(private val ctx: Context) {
                 .lines().map { it.trim() }.filter { it.isNotEmpty() && it != "null" }.distinct().joinToString(" · ")
             val ver = TvParsers.parseVersionCode(c.shell("dumpsys package ${BuildConfig.APPLICATION_ID} | grep versionCode")) ?: -1
             set(id) { it.copy(model = model.ifEmpty { null }, receiverVersion = ver) }
+            if (ver >= BuildConfig.VERSION_CODE) allowMediaAccess(c)
         }
     }
 
@@ -427,7 +429,7 @@ class TvHub(private val ctx: Context) {
 
     /**
      * Searches on the TV. With no [app], uses the TV's own search (Google TV shows results for the
-     * query directly). With an app, opens it, presses the Search key and types the query.
+     * query directly). With an app, searches inside that app (see [searchInApp]).
      */
     fun search(id: String, query: String, app: TvApp?) {
         val q = query.trim()
@@ -442,29 +444,76 @@ class TvHub(private val ctx: Context) {
                 if (!TvParsers.amFailed(out)) { say("Searching “$q” on $name"); return@act }
                 c.key(Keys.SEARCH)
                 delay(1500)
+                c.type(q)
+                delay(250)
+                c.key(Keys.ENTER)
+                say("Searching “$q” on $name")
             } else {
-                val fg = TvParsers.parseForegroundPackage(c.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'"))
-                if (fg != app.packageName) {
-                    startApp(c, app)
-                    // Wait for the app to come to the front, then give it a moment to finish loading.
-                    for (i in 0 until 14) {
-                        delay(600)
-                        val now = TvParsers.parseForegroundPackage(c.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'"))
-                        if (now == app.packageName) break
-                    }
-                    delay(1800)
-                }
-                c.key(Keys.SEARCH)
-                delay(1300)
+                say("Searching ${app.name} for “$q”…")
+                searchInApp(c, app.packageName, app.component, q)
             }
-            c.type(q)
-            delay(250)
-            c.key(Keys.ENTER)
-            say(if (app == null) "Searching “$q” on $name" else "Searching ${app.name} for “$q”")
         }
     }
 
-    // ---------- links ----------
+    private suspend fun foreground(c: TvConnection): String? =
+        TvParsers.parseForegroundPackage(c.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'"))
+
+    /** What's on screen, as an accessibility tree (null if the app doesn't expose one). */
+    private suspend fun screen(c: TvConnection): String? = runCatching {
+        c.shell("uiautomator dump /sdcard/tvhub_ui.xml >/dev/null 2>&1; cat /sdcard/tvhub_ui.xml 2>/dev/null; rm -f /sdcard/tvhub_ui.xml")
+    }.getOrNull()?.takeIf { it.contains("<hierarchy") }
+
+    /**
+     * Searches inside one app, as reliably as we can:
+     * 1. Ask the app directly with a search intent, and check the query shows up on screen.
+     * 2. Otherwise open the app, get past a "Who's watching?" profile screen if there is one,
+     *    press Search, clear whatever was typed last time, then type the new query.
+     */
+    private suspend fun searchInApp(c: TvConnection, pkg: String, component: String?, q: String) {
+        val viaIntent = c.shell("am start -a android.intent.action.SEARCH -p ${TvParsers.q(pkg)} --es query ${TvParsers.q(q)}")
+        if (!TvParsers.amFailed(viaIntent)) {
+            delay(2500)
+            val xml = screen(c)
+            if (xml == null || TvParsers.screenShowsQuery(xml, q)) return
+            if (TvParsers.isProfilePicker(xml)) {
+                c.key(Keys.CENTER)
+                delay(3000)
+                val again = screen(c)
+                if (again == null || TvParsers.screenShowsQuery(again, q)) return
+            }
+            // The intent opened the app but didn't search; carry on with the keyboard approach.
+        }
+
+        if (foreground(c) != pkg) {
+            startApp(c, TvApp(pkg, component, pkg))
+            for (i in 0 until 16) {
+                delay(500)
+                if (foreground(c) == pkg) break
+            }
+            delay(1500)
+        }
+        // Get past a profile picker ("Who's watching?") by choosing the highlighted profile.
+        for (attempt in 0 until 2) {
+            val xml = screen(c) ?: break
+            if (!TvParsers.isProfilePicker(xml)) break
+            c.key(Keys.CENTER)
+            delay(3000)
+        }
+        c.key(Keys.SEARCH)
+        delay(1400)
+        // Clear any old search text so the new one doesn't get tacked on.
+        val existing = screen(c)?.let { TvParsers.searchFieldText(it) }
+        val dels = when {
+            existing == null -> 30
+            existing.isEmpty() -> 0
+            else -> existing.length + 2
+        }
+        if (dels > 0) c.keys(listOf(Keys.MOVE_END) + List(dels) { Keys.DEL })
+        delay(200)
+        c.type(q)
+        delay(300)
+        c.key(Keys.ENTER)
+    }
 
     fun openLink(id: String, rawUrl: String) {
         val url = normalizeUrl(rawUrl) ?: run { say("That doesn't look like a link"); return }
@@ -514,6 +563,7 @@ class TvHub(private val ctx: Context) {
             try {
                 say("Installing TV Hub's player on $name (one time, about 30 s)…")
                 c.install(apkFile)
+                allowMediaAccess(c)
                 // Restart the key server so it runs the new version.
                 runCatching { c.shell("pkill tvhub-keys") }
                 c.keyServerGone()
@@ -528,19 +578,22 @@ class TvHub(private val ctx: Context) {
         }
     }
 
-    fun cast(id: String, item: PhoneMediaItem) {
+    fun cast(id: String, item: PhoneMediaItem) = castSource(id, PhoneMedia.asSource(ctx, item), item.mime, item.name)
+
+    /** Streams [source] from the phone and shows it full screen on the TV. */
+    fun castSource(id: String, source: MediaSource, mime: String, title: String) {
         val (ip, _) = NetUtil.phoneIpv4(ctx) ?: run { say("The phone isn't on Wi‑Fi"); return }
         server.start()
-        val path = server.register(PhoneMedia.asSource(ctx, item))
+        val path = server.register(source)
         val url = "http://$ip:${server.port}$path"
         val send: suspend (TvConnection) -> Unit = { c ->
             val out = c.shell(
                 "am start -n ${BuildConfig.APPLICATION_ID}/${BuildConfig.APPLICATION_ID}.ViewerActivity " +
-                    "-a android.intent.action.VIEW -d ${TvParsers.q(url)} -t ${TvParsers.q(item.mime)} " +
-                    "--es title ${TvParsers.q(item.name)}",
+                    "-a android.intent.action.VIEW -d ${TvParsers.q(url)} -t ${TvParsers.q(mime)} " +
+                    "--es title ${TvParsers.q(title)}",
             )
             if (TvParsers.amFailed(out)) error(out.lines().firstOrNull { it.contains("Error", true) } ?: "Couldn't start the player")
-            say("Showing ${item.name} on ${state(id)?.config?.name}")
+            say("Showing $title on ${state(id)?.config?.name}")
         }
         if (receiverReady(id)) act(id, block = send) else installReceiver(id, send)
     }
@@ -549,16 +602,147 @@ class TvHub(private val ctx: Context) {
 
     suspend fun scan(): List<String> = NetUtil.scanForAdb(ctx)
 
+    // ---------- continue watching: captured automatically from what's playing ----------
+
+    private val _recents = MutableStateFlow(store.recents())
+    val recents: StateFlow<List<RecentItem>> = _recents.asStateFlow()
+    private val lastCapture = ConcurrentHashMap<String, String>()
+
+    /** Lets the TV Hub helper read the TV's media sessions (titles + artwork). */
+    private suspend fun allowMediaAccess(c: TvConnection) {
+        val comp = "${BuildConfig.APPLICATION_ID}/${BuildConfig.APPLICATION_ID}.tv.MediaListener"
+        runCatching { c.shell("cmd notification allow_listener $comp 2>/dev/null") }
+    }
+
+    private suspend fun maybeCapture(id: String, c: TvConnection, now: NowPlaying?) {
+        val pkg = now?.packageName ?: return
+        val raw = now.title ?: return
+        if (now.playback !in setOf("Playing", "Paused", "Buffering")) return
+        if (pkg == BuildConfig.APPLICATION_ID || AppNames.isHome(pkg) || AppNames.isUtility(pkg)) return
+        val key = "$pkg|$raw"
+        if (lastCapture[id] == key) return
+        lastCapture[id] = key
+
+        val parts = raw.split(" · ")
+        var title = parts.first()
+        var subtitle = parts.drop(1).joinToString(" · ").ifEmpty { null }
+        var image: String? = null
+        var link: String? = null
+        val catalogApp = _apps.value[id]?.apps?.firstOrNull { it.packageName == pkg }
+
+        if (receiverReady(id)) {
+            val sess = runCatching { readSessions(c) }.getOrNull()?.firstOrNull { it.optString("pkg") == pkg }
+            if (sess != null) {
+                sess.optString("title").takeIf { it.isNotBlank() && it != "null" }?.let { title = it }
+                sess.optString("subtitle").takeIf { it.isNotBlank() && it != "null" }?.let { subtitle = it }
+                link = DeepLinks.fromMedia(pkg, sess.optString("mediaId").takeIf { it != "null" }, sess.optString("mediaUri").takeIf { it != "null" })
+                val art = sess.optString("art").takeIf { it.isNotEmpty() && it != "null" }
+                image = if (art != null) saveRecentArt(pkg, title, art)
+                else sess.optString("artUri").takeIf { it.startsWith("http") }
+            }
+        }
+        val itemId = (pkg + "|" + title.lowercase()).hashCode().toString()
+        val old = _recents.value.firstOrNull { it.id == itemId }
+        val item = RecentItem(
+            id = itemId, pkg = pkg, appName = catalogApp?.name ?: AppNames.of(pkg), title = title,
+            subtitle = subtitle ?: old?.subtitle, image = image ?: old?.image ?: catalogApp?.banner,
+            link = link ?: old?.link, at = System.currentTimeMillis(),
+        )
+        _recents.update { list -> (listOf(item) + list.filterNot { it.id == itemId }).take(24) }
+        store.saveRecents(_recents.value)
+    }
+
+    private suspend fun readSessions(c: TvConnection): List<org.json.JSONObject> {
+        val pkg = BuildConfig.APPLICATION_ID
+        val path = "/sdcard/Android/data/$pkg/files/nowplaying.json"
+        c.shell("rm -f $path; am broadcast -n $pkg/$pkg.tv.NowPlayingReceiver -f 0x10000020 >/dev/null")
+        repeat(8) {
+            delay(400)
+            val t = c.shell("cat $path 2>/dev/null").trim()
+            if (t.startsWith("{") && t.endsWith("}")) {
+                val o = org.json.JSONObject(t)
+                val arr = o.optJSONArray("sessions") ?: return emptyList()
+                return (0 until arr.length()).map { arr.getJSONObject(it) }
+            }
+        }
+        return emptyList()
+    }
+
+    private fun saveRecentArt(pkg: String, title: String, b64: String): String? = runCatching {
+        val dir = File(ctx.filesDir, "recent").apply { mkdirs() }
+        val f = File(dir, "${(pkg + title).hashCode()}_${System.currentTimeMillis()}.jpg")
+        f.writeBytes(android.util.Base64.decode(b64, android.util.Base64.NO_WRAP))
+        // Keep the folder small.
+        dir.listFiles()?.sortedByDescending { it.lastModified() }?.drop(60)?.forEach { it.delete() }
+        f.absolutePath
+    }.getOrNull()
+
+    fun playRecent(tvId: String, r: RecentItem) {
+        val name = state(tvId)?.config?.name ?: "The TV"
+        val link = r.link
+        if (link != null) {
+            playGuide(tvId, GuideItem(r.id, r.title, link, r.image, r.appName, r.at))
+        } else {
+            act(tvId) { c ->
+                say("Finding ${r.title} in ${r.appName} on $name…")
+                searchInApp(c, r.pkg, _apps.value[tvId]?.apps?.firstOrNull { it.packageName == r.pkg }?.component, r.title)
+            }
+        }
+    }
+
+    fun removeRecent(id: String) {
+        _recents.update { list -> list.filterNot { it.id == id } }
+        store.saveRecents(_recents.value)
+    }
+
+    fun isSaved(r: RecentItem) = _guide.value.any { it.id == "r" + r.id }
+
+    /** Star a "Continue watching" item: it goes into your saved Guide. Star again to remove it. */
+    fun toggleSaveRecent(r: RecentItem) {
+        val gid = "r" + r.id
+        if (_guide.value.any { it.id == gid }) { removeGuide(gid); return }
+        val url = r.link ?: DeepLinks.searchLink(r.pkg, r.title)
+        val item = GuideItem(gid, r.title, url, r.image, r.appName, System.currentTimeMillis())
+        _guide.update { listOf(item) + it }
+        store.saveGuide(_guide.value)
+        say("Saved ${r.title} to your Guide")
+    }
+
     // ---------- guide: saved shows/videos you can jump straight into ----------
 
     private val _guide = MutableStateFlow(store.guide())
     val guide: StateFlow<List<GuideItem>> = _guide.asStateFlow()
 
     init {
-        server.onAddLink = { url, title -> addGuide(url, title) }
+        server.web = object : HubWeb {
+            override fun tvs() = _tvs.value.map { it.config.id to it.config.name }
+            override fun addLink(url: String, title: String?) = addGuide(url, title)
+            override fun playLink(tvId: String, url: String): Boolean {
+                val id = state(tvId)?.config?.id ?: _tvs.value.firstOrNull()?.config?.id ?: return false
+                val found = Regex("https?://\\S+").find(url)?.value ?: url.trim()
+                val clean = normalizeUrl(found)?.let(DeepLinks::canonical) ?: return false
+                playGuide(id, GuideItem("web", DeepLinks.serviceFor(clean)?.name ?: "your link", clean, null, DeepLinks.serviceFor(clean)?.name, 0))
+                return true
+            }
+            override fun castUpload(tvId: String, file: File, mime: String, name: String): Boolean {
+                val id = state(tvId)?.config?.id ?: _tvs.value.firstOrNull()?.config?.id ?: return false
+                castSource(id, fileSource(file, mime), mime, name)
+                return true
+            }
+            override val uploadDir: File get() = File(ctx.cacheDir, "uploads")
+        }
+    }
+
+    private fun fileSource(f: File, type: String) = object : MediaSource {
+        override val mime = type
+        override val size = f.length()
+        override fun open(offset: Long): java.io.InputStream = java.io.FileInputStream(f).also { it.channel.position(offset) }
     }
 
     /** Address of the "Add to Guide" page other devices on the Wi‑Fi can open. */
+    /** Address of the web page for casting from your own phone or computer. */
+    fun webAddress(): String? = guideAddress()?.removeSuffix("add")
+
     fun guideAddress(): String? {
         val (ip, _) = NetUtil.phoneIpv4(ctx) ?: return null
         server.start()
@@ -596,6 +780,13 @@ class TvHub(private val ctx: Context) {
 
     fun playGuide(tvId: String, item: GuideItem) {
         val name = state(tvId)?.config?.name ?: "The TV"
+        DeepLinks.parseSearchLink(item.url)?.let { (pkg, q) ->
+            act(tvId) { c ->
+                say("Finding ${item.title} on $name…")
+                searchInApp(c, pkg, null, q)
+            }
+            return
+        }
         act(tvId) { c ->
             val installed = TvParsers.parsePackageList(c.shell("pm list packages")).toSet()
             for (cmd in DeepLinks.commands(item.url, installed)) {
@@ -624,6 +815,7 @@ object Keys {
     const val DEL = 67
     const val MENU = 82
     const val SEARCH = 84
+    const val MOVE_END = 123
     const val PLAY_PAUSE = 85
     const val REWIND = 89
     const val FAST_FORWARD = 90

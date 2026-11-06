@@ -43,6 +43,7 @@ import dev.daniel.tvhub.BuildConfig
 import dev.daniel.tvhub.core.AppNames
 import dev.daniel.tvhub.core.Conn
 import dev.daniel.tvhub.core.GuideItem
+import dev.daniel.tvhub.core.RecentItem
 import dev.daniel.tvhub.core.Keys
 import dev.daniel.tvhub.core.Power
 import dev.daniel.tvhub.core.TvApp
@@ -59,6 +60,8 @@ fun HomePage(hub: TvHub, tv: TvState, onSearch: () -> Unit, onVoice: () -> Unit,
     val pinsMap by hub.pins.collectAsStateWithLifecycle()
     val usageMap by hub.usageByTv.collectAsStateWithLifecycle()
     val guide by hub.guide.collectAsStateWithLifecycle()
+    val recents by hub.recents.collectAsStateWithLifecycle()
+    var removeRecent by remember { mutableStateOf<RecentItem?>(null) }
     val online = tv.conn == Conn.ONLINE
     LaunchedEffect(id, online, tv.receiverVersion) { if (online) hub.ensureApps(id) }
 
@@ -128,18 +131,45 @@ fun HomePage(hub: TvHub, tv: TvState, onSearch: () -> Unit, onVoice: () -> Unit,
         }
 
         // ----- Guide
+        if (recents.isNotEmpty()) {
+            item(key = "recentHead", span = full) {
+                SectionHead("Continue watching", "Picked up automatically from your TVs · ☆ to save") {}
+            }
+            item(key = "recentRow", span = full) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(end = 8.dp)) {
+                    items(recents, key = { it.id }) { r ->
+                        val saved = guide.any { it.id == "r" + r.id }
+                        MediaCard(
+                            title = r.title, subtitle = r.subtitle, image = r.image, badge = r.appName,
+                            saved = saved, enabled = online,
+                            onClick = { hub.playRecent(id, r) },
+                            onLongClick = { removeRecent = r },
+                            onStar = { hub.toggleSaveRecent(r) },
+                        )
+                    }
+                }
+            }
+        }
         item(key = "guideHead", span = full) {
-            SectionHead("Guide", "Jump straight into a show or video") {
+            SectionHead("Guide", "Your saved shows and videos · tap to play") {
                 TextButton(onClick = onAddGuide) { Text("+ Add", color = Pink, fontWeight = FontWeight.Bold) }
             }
         }
         item(key = "guideRow", span = full) {
             if (guide.isEmpty()) {
-                DashedCard("Save shows, movies and videos", "Paste a Netflix, YouTube, Disney+ or Prime link. One tap plays it on the TV.", onAddGuide)
+                DashedCard(
+                    "Save shows, movies and videos",
+                    if (recents.isNotEmpty()) "Tap ☆ on anything in Continue watching, or paste a link." else "Watch something and it shows up in Continue watching — or paste a link.",
+                    onAddGuide,
+                )
             } else {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(end = 8.dp)) {
                     items(guide, key = { it.id }) { g ->
-                        GuideCard(g, enabled = online, onClick = { hub.playGuide(id, g) }, onLongClick = { removeGuide = g })
+                        MediaCard(
+                            title = g.title, subtitle = null, image = g.image, badge = g.service,
+                            saved = null, enabled = online,
+                            onClick = { hub.playGuide(id, g) }, onLongClick = { removeGuide = g }, onStar = {},
+                        )
                     }
                     item(key = "add") {
                         Box(
@@ -181,6 +211,17 @@ fun HomePage(hub: TvHub, tv: TvState, onSearch: () -> Unit, onVoice: () -> Unit,
                 )
             }
         }
+    }
+
+    removeRecent?.let { r ->
+        AlertDialog(
+            onDismissRequest = { removeRecent = null },
+            containerColor = PanelHi,
+            title = { Text(r.title) },
+            text = { Text("${r.appName}${r.subtitle?.let { " · $it" } ?: ""}", color = TextLo) },
+            confirmButton = { TextButton(onClick = { hub.removeRecent(r.id); removeRecent = null }) { Text("Remove", color = OfflineRed) } },
+            dismissButton = { TextButton(onClick = { removeRecent = null }) { Text("Cancel") } },
+        )
     }
 
     removeGuide?.let { g ->
@@ -231,8 +272,12 @@ private fun MiniButton(label: String, onClick: () -> Unit) {
     ) { Text(label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
 }
 
+/** A 16:9 picture card for Continue watching and Guide items. [saved] null = no star button. */
 @Composable
-private fun GuideCard(g: GuideItem, enabled: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
+private fun MediaCard(
+    title: String, subtitle: String?, image: String?, badge: String?, saved: Boolean?, enabled: Boolean,
+    onClick: () -> Unit, onLongClick: () -> Unit, onStar: () -> Unit,
+) {
     val haptic = LocalHapticFeedback.current
     Column(
         Modifier.width(220.dp).combinedClickable(
@@ -242,24 +287,35 @@ private fun GuideCard(g: GuideItem, enabled: Boolean, onClick: () -> Unit, onLon
         ),
     ) {
         Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(18.dp)).background(Brush.linearGradient(listOf(PanelHi, Panel)))) {
-            if (g.image != null) {
-                AsyncImage(model = g.image, contentDescription = g.title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            if (image != null) {
+                AsyncImage(
+                    model = if (image.startsWith("/")) File(image) else image,
+                    contentDescription = title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(),
+                )
             } else {
-                Text(g.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.align(Alignment.Center).padding(12.dp), maxLines = 2)
+                Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.align(Alignment.Center).padding(12.dp), maxLines = 2)
             }
-            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Transparent, Ink.copy(alpha = 0.7f)))))
+            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Transparent, Ink.copy(alpha = 0.75f)))))
             Box(
                 Modifier.align(Alignment.Center).size(46.dp).clip(CircleShape).background(Ink.copy(alpha = 0.55f)),
                 contentAlignment = Alignment.Center,
             ) { Icon(HubIcons.Play, contentDescription = "Play", tint = Color.White, modifier = Modifier.size(26.dp)) }
-            g.service?.let {
-                Text(
-                    it.uppercase(), style = MaterialTheme.typography.labelSmall, color = Color.White,
-                    modifier = Modifier.align(Alignment.BottomStart).padding(8.dp),
-                )
+            badge?.let {
+                Text(it.uppercase(), style = MaterialTheme.typography.labelSmall, color = Color.White, modifier = Modifier.align(Alignment.BottomStart).padding(8.dp))
+            }
+            if (saved != null) {
+                Box(
+                    Modifier.align(Alignment.TopEnd).padding(6.dp).size(34.dp).clip(CircleShape)
+                        .background(if (saved) Glow else Brush.linearGradient(listOf(Ink.copy(alpha = 0.7f), Ink.copy(alpha = 0.7f))))
+                        .clickable { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onStar() },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(if (saved) HubIcons.Star else HubIcons.StarOutline, contentDescription = if (saved) "Saved" else "Save to Guide", tint = Color.White, modifier = Modifier.size(20.dp))
+                }
             }
         }
-        Text(g.title, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 4.dp, top = 6.dp))
+        Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 4.dp, top = 6.dp))
+        if (subtitle != null) Text(subtitle, style = MaterialTheme.typography.bodySmall, color = TextLo, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 4.dp))
     }
 }
 

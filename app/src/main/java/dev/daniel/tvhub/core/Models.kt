@@ -56,3 +56,17 @@ data class GuideItem(
     val service: String?,
     val addedAt: Long,
 )
+
+/** Something you were watching on one of the TVs, captured automatically. */
+data class RecentItem(
+    val id: String,
+    val pkg: String,
+    val appName: String,
+    val title: String,
+    val subtitle: String?,
+    /** Local file path or web URL of a picture. */
+    val image: String?,
+    /** A link that opens this exact thing, if the app reported one. Otherwise we search the app. */
+    val link: String?,
+    val at: Long,
+)
