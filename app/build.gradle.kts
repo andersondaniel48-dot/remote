@@ -46,7 +46,7 @@ android {
         buildConfig = true
     }
     packaging {
-        resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+        resources { excludes += setOf("/META-INF/{AL2.0,LGPL2.1}", "/META-INF/LICENSE*", "/META-INF/NOTICE*") }
     }
 }
 
@@ -64,7 +64,14 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("io.coil-kt:coil-video:2.7.0")
     // Talks adb straight to the TVs over Wi‑Fi (no adb binary needed).
-    implementation("dev.mobile:dadb:1.2.9")
+    implementation("dev.mobile:dadb:1.2.9") {
+        // dadb's published POM drags in its JUnit test runtime; the app doesn't need it.
+        exclude(group = "org.junit.platform")
+        exclude(group = "org.junit.jupiter")
+        exclude(group = "org.junit.vintage")
+        exclude(group = "org.opentest4j")
+        exclude(group = "org.apiguardian")
+    }
 
     testImplementation("junit:junit:4.13.2")
 }
