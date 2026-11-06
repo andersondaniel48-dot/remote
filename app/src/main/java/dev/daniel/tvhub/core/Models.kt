@@ -46,3 +46,13 @@ data class TvApp(
 )
 
 data class AppsState(val loading: Boolean = false, val apps: List<TvApp> = emptyList(), val error: String? = null, val hasArtwork: Boolean = false)
+
+/** Something saved in the Guide: a show, movie, video or channel you can jump straight into. */
+data class GuideItem(
+    val id: String,
+    val title: String,
+    val url: String,
+    val image: String?,
+    val service: String?,
+    val addedAt: Long,
+)

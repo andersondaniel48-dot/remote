@@ -17,7 +17,7 @@ jobs:
       - name: Build
         run: |
           set -o pipefail
-          ./gradlew --no-daemon assembleDebug testDebugUnitTest 2>&1 | tee build.log
+          ./gradlew --no-daemon assembleRelease testReleaseUnitTest 2>&1 | tee build.log
       - name: Report errors
         if: failure()
         run: |
@@ -32,4 +32,4 @@ jobs:
         if: success()
         with:
           name: TVHub-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/release/app-release.apk

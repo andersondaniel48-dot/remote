@@ -28,7 +28,20 @@ class TvHub(private val ctx: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val store = TvStore(ctx)
     private val keyPair by lazy { AdbKeys.load(ctx) }
+    // Two connections per TV: one for your button presses, one for background status checks,
+    // so a press never waits behind a status check.
     private val conns = ConcurrentHashMap<String, TvConnection>()
+    private val pollConns = ConcurrentHashMap<String, TvConnection>()
+
+    /** The TV you're looking at gets checked every 2.5 s; the others every 15 s. */
+    @Volatile var activeId: String? = null
+        private set
+
+    fun setActive(id: String?) {
+        if (activeId == id) return
+        activeId = id
+        id?.let { refresh(it, 0) }
+    }
     private val pollers = ConcurrentHashMap<String, Job>()
     private val pokes = ConcurrentHashMap<String, MutableSharedFlow<Unit>>()
 
@@ -69,8 +82,8 @@ class TvHub(private val ctx: Context) {
         pollers[id] = scope.launch {
             while (isActive) {
                 poll(id)
-                // Wait 5 s, or less if an action asked for a quick refresh.
-                val wait = launch { delay(5_000) }
+                // Wait, or less if an action asked for a quick refresh.
+                val wait = launch { delay(if (id == activeId) 2_500 else 15_000) }
                 val listener = launch { poke.collect { wait.cancel() } }
                 wait.join()
                 listener.cancel()
@@ -98,6 +111,7 @@ class TvHub(private val ctx: Context) {
         _tvs.update { list -> list.map { if (it.config.id == cfg.id) TvState(cfg, firstConnectStartedAt = System.currentTimeMillis()) else it } }
         if (old != null && (old.host != cfg.host || old.port != cfg.port)) {
             conns.remove(cfg.id)?.close()
+            pollConns.remove(cfg.id)?.close()
         }
         persist()
         refresh(cfg.id, 0)
@@ -108,6 +122,7 @@ class TvHub(private val ctx: Context) {
         runCatching { File(ctx.filesDir, "art/$id").deleteRecursively() }
         pollers.remove(id)?.cancel()
         conns.remove(id)?.close()
+        pollConns.remove(id)?.close()
         _tvs.update { list -> list.filterNot { it.config.id == id } }
         _apps.update { it - id }
         persist()
@@ -131,18 +146,21 @@ class TvHub(private val ctx: Context) {
         _tvs.update { list -> list.map { if (it.config.id == id) f(it) else it } }
     }
 
-    private fun conn(id: String): TvConnection? {
+    private fun conn(id: String): TvConnection? = connIn(conns, id)?.also { it.keyServerAllowed = receiverReady(id) }
+    private fun pollConn(id: String): TvConnection? = connIn(pollConns, id)
+
+    private fun connIn(map: ConcurrentHashMap<String, TvConnection>, id: String): TvConnection? {
         val cfg = state(id)?.config ?: return null
-        val existing = conns[id]
+        val existing = map[id]
         if (existing != null && existing.config.host == cfg.host && existing.config.port == cfg.port) return existing
         existing?.close()
-        return TvConnection(cfg) { keyPair }.also { conns[id] = it }
+        return TvConnection(cfg) { keyPair }.also { map[id] = it }
     }
 
     // ---------- status ----------
 
     private suspend fun poll(id: String) {
-        val c = conn(id) ?: return
+        val c = pollConn(id) ?: return
         val wasOnline = state(id)?.conn == Conn.ONLINE
         if (!c.isConnected && !wasOnline) set(id) { it.copy(conn = Conn.CONNECTING) }
         try {
@@ -156,6 +174,7 @@ class TvHub(private val ctx: Context) {
                 }
             }
             set(id) { it.copy(conn = Conn.ONLINE, power = power, now = now, error = null) }
+            if (TvParsers.keyServerRunning(out) == false) conns[id]?.keyServerGone()
             if (!wasOnline || state(id)?.receiverVersion == null) fetchDetails(id, c)
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException) throw t
@@ -207,10 +226,17 @@ class TvHub(private val ctx: Context) {
     private val keyQueues = ConcurrentHashMap<String, Channel<Int>>()
 
     /**
-     * Sends a key press. Presses that arrive close together (fast touchpad swipes) are batched
-     * into one `input keyevent a b c` call, which is much quicker than one call per press.
+     * Sends a key press. Presses go through the TV's key server (instant) when it's available.
+     * Presses that arrive close together (fast touchpad swipes) are batched into one command.
      */
     fun key(id: String, code: Int) {
+        if (code == Keys.PLAY_PAUSE) {
+            // Flip the play/pause icon right away; the next status check confirms it.
+            set(id) { s ->
+                val n = s.now ?: return@set s
+                s.copy(now = n.copy(playback = if (n.playback == "Playing") "Paused" else "Playing"))
+            }
+        }
         val ch = keyQueues.getOrPut(id) { Channel<Int>(Channel.UNLIMITED).also { startKeyPump(id, it) } }
         ch.trySend(code)
     }
@@ -218,33 +244,35 @@ class TvHub(private val ctx: Context) {
     private fun startKeyPump(id: String, ch: Channel<Int>) = scope.launch {
         for (first in ch) {
             val batch = mutableListOf(first)
-            delay(35)
-            while (batch.size < 12) batch += ch.tryReceive().getOrNull() ?: break
+            delay(12)
+            while (batch.size < 16) batch += ch.tryReceive().getOrNull() ?: break
             val c = conn(id) ?: continue
             try {
-                c.shell("input keyevent " + batch.joinToString(" "))
+                c.keys(batch)
             } catch (t: Throwable) {
                 if (t is kotlinx.coroutines.CancellationException) throw t
                 _messages.tryEmit("${state(id)?.config?.name ?: "TV"}: ${friendly(t)}")
             }
-            refresh(id)
+            refresh(id, 900)
         }
     }
 
     fun text(id: String, s: String) {
         if (s.isEmpty()) return
-        act(id, refreshAfter = false) { it.shell("input text ${TvParsers.inputText(s)}") }
+        act(id, refreshAfter = false) { it.type(s) }
     }
 
     fun power(id: String) {
         val off = state(id)?.power == Power.OFF
+        set(id) { it.copy(power = if (off) Power.ON else Power.OFF) }
         act(id) { it.key(if (off) Keys.WAKEUP else Keys.SLEEP) }
+        refresh(id, 2500)
     }
 
     // ---------- apps ----------
 
     private val _pins = MutableStateFlow(_tvs.value.associate { it.config.id to store.pins(it.config.id) })
-    val pins: StateFlow<Map<String, Set<String>>> = _pins.asStateFlow()
+    val pins: StateFlow<Map<String, List<String>>> = _pins.asStateFlow()
 
     private val _usage = MutableStateFlow(_tvs.value.associate { it.config.id to store.usage(it.config.id) })
     val usageByTv: StateFlow<Map<String, Map<String, Int>>> = _usage.asStateFlow()
@@ -261,14 +289,24 @@ class TvHub(private val ctx: Context) {
     }
 
     fun togglePin(id: String, pkg: String) {
-        val cur = _pins.value[id] ?: emptySet()
+        val cur = _pins.value[id] ?: emptyList()
         val next = if (pkg in cur) cur - pkg else cur + pkg
         store.setPins(id, next)
         _pins.update { it + (id to next) }
     }
 
     /** Pinned first, then most used, then popular streaming apps, then A–Z. Settings-type apps last. */
-    fun ordered(id: String, apps: List<TvApp>, pins: Set<String>, usage: Map<String, Int>): List<TvApp> =
+    fun movePin(id: String, pkg: String, delta: Int) {
+        val cur = (_pins.value[id] ?: emptyList()).toMutableList()
+        val i = cur.indexOf(pkg)
+        val j = i + delta
+        if (i < 0 || j !in cur.indices) return
+        cur.add(j, cur.removeAt(i))
+        store.setPins(id, cur)
+        _pins.update { it + (id to cur.toList()) }
+    }
+
+    fun ordered(id: String, apps: List<TvApp>, pins: Collection<String>, usage: Map<String, Int>): List<TvApp> =
         apps.sortedWith(
             compareBy<TvApp>(
                 { if (it.packageName in pins) 0 else 1 },
@@ -419,7 +457,7 @@ class TvHub(private val ctx: Context) {
                 c.key(Keys.SEARCH)
                 delay(1300)
             }
-            c.shell("input text ${TvParsers.inputText(q)}")
+            c.type(q)
             delay(250)
             c.key(Keys.ENTER)
             say(if (app == null) "Searching “$q” on $name" else "Searching ${app.name} for “$q”")
@@ -476,6 +514,9 @@ class TvHub(private val ctx: Context) {
             try {
                 say("Installing TV Hub's player on $name (one time, about 30 s)…")
                 c.install(apkFile)
+                // Restart the key server so it runs the new version.
+                runCatching { c.shell("pkill tvhub-keys") }
+                c.keyServerGone()
                 val ver = TvParsers.parseVersionCode(c.shell("dumpsys package ${BuildConfig.APPLICATION_ID} | grep versionCode")) ?: -1
                 set(id) { it.copy(receiverVersion = ver) }
                 if (ver < BuildConfig.VERSION_CODE) error("Install didn't finish on $name")
@@ -507,6 +548,66 @@ class TvHub(private val ctx: Context) {
     fun stopCast(id: String) = act(id) { it.shell("am force-stop ${BuildConfig.APPLICATION_ID}") }
 
     suspend fun scan(): List<String> = NetUtil.scanForAdb(ctx)
+
+    // ---------- guide: saved shows/videos you can jump straight into ----------
+
+    private val _guide = MutableStateFlow(store.guide())
+    val guide: StateFlow<List<GuideItem>> = _guide.asStateFlow()
+
+    init {
+        server.onAddLink = { url, title -> addGuide(url, title) }
+    }
+
+    /** Address of the "Add to Guide" page other devices on the Wi‑Fi can open. */
+    fun guideAddress(): String? {
+        val (ip, _) = NetUtil.phoneIpv4(ctx) ?: return null
+        server.start()
+        return "http://$ip:${server.port}/add"
+    }
+
+    fun addGuide(rawUrl: String, title: String? = null): Boolean {
+        val found = Regex("https?://\\S+").find(rawUrl)?.value ?: rawUrl.trim()
+        val url = normalizeUrl(found)?.let(DeepLinks::canonical) ?: return false
+        if (_guide.value.any { it.url == url }) { say("That's already in your Guide"); return true }
+        val svc = DeepLinks.serviceFor(url)?.name
+        val item = GuideItem(UUID.randomUUID().toString(), title ?: svc ?: DeepLinks.host(url), url, null, svc, System.currentTimeMillis())
+        _guide.update { listOf(item) + it }
+        store.saveGuide(_guide.value)
+        say("Added to your Guide")
+        scope.launch(Dispatchers.IO) {
+            val info = runCatching { LinkInfo.fetch(url) }.getOrNull() ?: return@launch
+            _guide.update { list ->
+                list.map { if (it.id == item.id) it.copy(title = title ?: info.title ?: it.title, image = info.image ?: it.image) else it }
+            }
+            store.saveGuide(_guide.value)
+        }
+        return true
+    }
+
+    fun removeGuide(id: String) {
+        _guide.update { list -> list.filterNot { it.id == id } }
+        store.saveGuide(_guide.value)
+    }
+
+    fun moveGuideToFront(id: String) {
+        _guide.update { list -> list.sortedBy { if (it.id == id) 0 else 1 } }
+        store.saveGuide(_guide.value)
+    }
+
+    fun playGuide(tvId: String, item: GuideItem) {
+        val name = state(tvId)?.config?.name ?: "The TV"
+        act(tvId) { c ->
+            val installed = TvParsers.parsePackageList(c.shell("pm list packages")).toSet()
+            for (cmd in DeepLinks.commands(item.url, installed)) {
+                val out = c.shell(cmd)
+                if (!TvParsers.amFailed(out)) {
+                    say("Opening ${item.title} on $name")
+                    return@act
+                }
+            }
+            say("$name couldn't open this. Is ${item.service ?: "the app"} installed and signed in?")
+        }
+    }
 }
 
 object Keys {

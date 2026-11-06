@@ -36,7 +36,7 @@ import dev.daniel.tvhub.core.TvHub
 import dev.daniel.tvhub.core.TvState
 import kotlinx.coroutines.launch
 
-private enum class SheetKind { SEARCH, VOICE, REMOTE, TYPE, PHOTOS }
+private enum class SheetKind { SEARCH, VOICE, REMOTE, TYPE, PHOTOS, GUIDE }
 
 @Composable
 fun HubScreen(hub: TvHub, activity: MainActivity) {
@@ -51,7 +51,10 @@ fun HubScreen(hub: TvHub, activity: MainActivity) {
     val startIndex = remember { tvs.indexOfFirst { it.config.id == hub.store.selectedTv }.coerceAtLeast(0) }
     val pager = rememberPagerState(initialPage = startIndex) { tvs.size }
     val selected: TvState? = tvs.getOrNull(pager.currentPage.coerceAtMost(tvs.size - 1).coerceAtLeast(0))
-    LaunchedEffect(selected?.config?.id) { selected?.let { hub.store.selectedTv = it.config.id } }
+    LaunchedEffect(selected?.config?.id) {
+        selected?.let { hub.store.selectedTv = it.config.id }
+        hub.setActive(selected?.config?.id)
+    }
 
     LaunchedEffect(Unit) {
         hub.messages.collect { msg ->
@@ -90,7 +93,12 @@ fun HubScreen(hub: TvHub, activity: MainActivity) {
             } else {
                 HorizontalPager(state = pager, modifier = Modifier.weight(1f), beyondViewportPageCount = 1) { page ->
                     tvs.getOrNull(page)?.let { tv ->
-                        HomePage(hub, tv, onSearch = { open(SheetKind.SEARCH) }, onVoice = { open(SheetKind.VOICE) })
+                        HomePage(
+                            hub, tv,
+                            onSearch = { open(SheetKind.SEARCH) },
+                            onVoice = { open(SheetKind.VOICE) },
+                            onAddGuide = { open(SheetKind.GUIDE) },
+                        )
                     }
                 }
             }
@@ -122,6 +130,7 @@ fun HubScreen(hub: TvHub, activity: MainActivity) {
                     SheetKind.REMOTE -> RemoteSheet(hub, selected, remoteHint)
                     SheetKind.TYPE -> TypeSheet(hub, selected)
                     SheetKind.PHOTOS -> PhotosSheet(hub, selected)
+                    SheetKind.GUIDE -> GuideSheet(hub, selected) { sheet = null }
                 }
             }
         }

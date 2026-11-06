@@ -79,8 +79,15 @@ class TvStore(context: Context) {
     fun catalogHasArtwork(tvId: String) = prefs.getBoolean("artwork_$tvId", false)
     fun catalogAge(tvId: String) = System.currentTimeMillis() - prefs.getLong("catalogAt_$tvId", 0L)
 
-    fun pins(tvId: String): Set<String> = prefs.getStringSet("pins_$tvId", null)?.toSet() ?: emptySet()
-    fun setPins(tvId: String, pins: Set<String>) { prefs.edit().putStringSet("pins_$tvId", pins).apply() }
+    /** Favorite apps for a TV, in the order you added them. */
+    fun pins(tvId: String): List<String> {
+        prefs.getString("favs_$tvId", null)?.let { raw ->
+            return runCatching { JSONArray(raw).let { a -> (0 until a.length()).map { a.getString(it) } } }.getOrDefault(emptyList())
+        }
+        // Older versions stored an unordered set.
+        return prefs.getStringSet("pins_$tvId", null)?.toList() ?: emptyList()
+    }
+    fun setPins(tvId: String, pins: List<String>) { prefs.edit().putString("favs_$tvId", JSONArray(pins).toString()).apply() }
 
     fun usage(tvId: String): Map<String, Int> {
         val raw = prefs.getString("usage_$tvId", null) ?: return emptyMap()
@@ -96,7 +103,7 @@ class TvStore(context: Context) {
 
     fun forgetTv(tvId: String) {
         prefs.edit().remove("catalog_$tvId").remove("artwork_$tvId").remove("catalogAt_$tvId")
-            .remove("pins_$tvId").remove("usage_$tvId").apply()
+            .remove("pins_$tvId").remove("favs_$tvId").remove("usage_$tvId").apply()
     }
 
     fun recentSearches(): List<String> {
@@ -110,6 +117,30 @@ class TvStore(context: Context) {
     }
 
     fun clearRecentSearches() { prefs.edit().remove("searches").apply() }
+
+    fun guide(): List<GuideItem> {
+        val raw = prefs.getString("guide", null) ?: return emptyList()
+        return runCatching {
+            val a = JSONArray(raw)
+            (0 until a.length()).map { i ->
+                val o = a.getJSONObject(i)
+                GuideItem(
+                    id = o.getString("id"), title = o.getString("title"), url = o.getString("url"),
+                    image = o.optString("image").ifEmpty { null }, service = o.optString("service").ifEmpty { null },
+                    addedAt = o.optLong("addedAt"),
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    fun saveGuide(items: List<GuideItem>) {
+        val a = JSONArray()
+        items.forEach {
+            a.put(JSONObject().put("id", it.id).put("title", it.title).put("url", it.url)
+                .put("image", it.image ?: "").put("service", it.service ?: "").put("addedAt", it.addedAt))
+        }
+        prefs.edit().putString("guide", a.toString()).apply()
+    }
 
     var volumeKeysControlTv: Boolean
         get() = prefs.getBoolean("volKeys", true)

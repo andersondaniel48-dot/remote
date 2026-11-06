@@ -12,7 +12,22 @@ object TvParsers {
         "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'",
         "echo '$SEP'",
         "dumpsys media_session",
+        "echo '$SEP'",
+        "pidof tvhub-keys",
     ).joinToString("; ")
+
+    /** Starts the always-on key injector (see KeyServer.kt) from the TV Hub APK installed on the TV. */
+    const val KEY_SERVER_CMD =
+        "pkill tvhub-keys 2>/dev/null; " +
+            "CLASSPATH=\$(pm path dev.daniel.tvhub | head -n 1 | cut -d: -f2) " +
+            "exec app_process /system/bin --nice-name=tvhub-keys dev.daniel.tvhub.tv.KeyServer 2>/dev/null"
+
+    /** True/false if the status output says whether the key server is running, null if unknown. */
+    fun keyServerRunning(out: String): Boolean? {
+        val parts = out.split(SEP)
+        if (parts.size < 4) return null
+        return parts[3].trim().split(Regex("\\s+")).any { it.toIntOrNull() != null }
+    }
 
     const val RESUMED_CMD = "dumpsys activity activities | grep -E 'ResumedActivity'"
 

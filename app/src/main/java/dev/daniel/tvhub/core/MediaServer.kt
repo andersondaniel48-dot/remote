@@ -58,6 +58,12 @@ class MediaServer(private val preferredPort: Int = 8765) {
         server = null
     }
 
+    /**
+     * Called when someone submits the "Add to Guide" page (http://<phone>:<port>/add) from another
+     * device on the Wi‑Fi. Return true if the link was accepted.
+     */
+    @Volatile var onAddLink: ((url: String, title: String?) -> Boolean)? = null
+
     fun register(source: MediaSource): String {
         val token = UUID.randomUUID().toString().replace("-", "")
         entries[token] = source
@@ -90,6 +96,24 @@ class MediaServer(private val preferredPort: Int = 8765) {
         val parts = requestLine.split(' ')
         val method = parts.getOrNull(0)?.uppercase() ?: return
         val path = parts.getOrNull(1)?.substringBefore('?') ?: return
+        if (path == "/add" || path == "/") {
+            var message: String? = null
+            if (method == "POST") {
+                val len = (headers["content-length"]?.toIntOrNull() ?: 0).coerceIn(0, 16_384)
+                val body = ByteArray(len)
+                var read = 0
+                while (read < len) { val r = input.read(body, read, len - read); if (r < 0) break; read += r }
+                val form = parseForm(String(body, 0, read, Charsets.UTF_8))
+                val url = form["url"]?.trim().orEmpty()
+                val ok = url.isNotEmpty() && (onAddLink?.invoke(url, form["title"]?.trim()?.ifEmpty { null }) == true)
+                message = if (ok) "Added to your Guide ✓" else "That doesn't look like a link — try again."
+            }
+            val html = addPage(message).toByteArray(Charsets.UTF_8)
+            writeHead(out, "200 OK", "text/html; charset=utf-8", html.size.toLong(), null)
+            out.write(html)
+            out.flush()
+            return
+        }
         val token = path.removePrefix("/m/")
         val src = if (path.startsWith("/m/")) entries[token] else null
         if (src == null || (method != "GET" && method != "HEAD")) {
@@ -133,6 +157,36 @@ class MediaServer(private val preferredPort: Int = 8765) {
         }
         out.flush()
     }
+
+    private fun parseForm(body: String): Map<String, String> =
+        body.split('&').mapNotNull { kv ->
+            val i = kv.indexOf('=')
+            if (i <= 0) null else java.net.URLDecoder.decode(kv.substring(0, i), "UTF-8") to java.net.URLDecoder.decode(kv.substring(i + 1), "UTF-8")
+        }.toMap()
+
+    private fun addPage(message: String?): String = """
+        <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>Add to TV Hub Guide</title>
+        <style>
+          body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0A0B10;color:#F4F4F8;display:flex;justify-content:center}
+          main{max-width:520px;width:100%;padding:32px 20px}
+          h1{font-size:28px;margin:0 0 6px;background:linear-gradient(90deg,#8B6CFF,#FF5FA2,#FFA26B);-webkit-background-clip:text;color:transparent}
+          p{color:#9A9CB0;line-height:1.5}
+          label{display:block;margin:18px 0 6px;font-weight:600}
+          input{width:100%;box-sizing:border-box;padding:14px 16px;border-radius:14px;border:1px solid #2A2E40;background:#1D2030;color:#F4F4F8;font-size:16px}
+          button{margin-top:22px;width:100%;padding:15px;border:0;border-radius:999px;font-size:17px;font-weight:700;color:#fff;background:linear-gradient(90deg,#8B6CFF,#FF5FA2,#FFA26B)}
+          .msg{margin-top:18px;padding:12px 16px;border-radius:14px;background:#1D2030}
+        </style></head><body><main>
+        <h1>Add to TV Hub</h1>
+        <p>Paste a link to a show, movie, YouTube video or channel. In most streaming apps, tap <b>Share → Copy link</b>. It appears in your Guide, and tapping it on TV Hub jumps straight to it on the TV.</p>
+        <form method="post" action="/add">
+          <label for="u">Link</label><input id="u" name="url" type="url" placeholder="https://www.netflix.com/title/…" required autofocus>
+          <label for="t">Name (optional)</label><input id="t" name="title" placeholder="Filled in automatically">
+          <button type="submit">Add to Guide</button>
+        </form>
+        ${if (message != null) "<div class=\"msg\">${message}</div>" else ""}
+        </main></body></html>
+    """.trimIndent()
 
     private fun writeHead(out: BufferedOutputStream, status: String, mime: String, length: Long, contentRange: String?) {
         val sb = StringBuilder()

@@ -42,11 +42,13 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -55,6 +57,8 @@ import coil.compose.AsyncImage
 import dev.daniel.tvhub.BuildConfig
 import dev.daniel.tvhub.core.AppNames
 import dev.daniel.tvhub.core.Conn
+import dev.daniel.tvhub.core.DeepLinks
+import dev.daniel.tvhub.core.GuideItem
 import dev.daniel.tvhub.core.Keys
 import dev.daniel.tvhub.core.PhoneMedia
 import dev.daniel.tvhub.core.PhoneMediaItem
@@ -150,7 +154,13 @@ fun ColumnScope.SearchSheet(hub: TvHub, tv: TvState, startWithVoice: Boolean, on
 
     Spacer(Modifier.height(18.dp))
     if (isLink) {
-        GlowButton("Open this link on ${tv.config.name}", Modifier.fillMaxWidth()) { submit(q) }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            GlowButton("Play on ${tv.config.name}", Modifier.weight(1f)) {
+                val item = GuideItem("tmp", q.trim(), DeepLinks.canonical(q.trim()), null, DeepLinks.serviceFor(q.trim())?.name, 0)
+                hub.playGuide(id, item); onDone(false)
+            }
+            OutlinedButton(onClick = { hub.addGuide(q); q = "" }, modifier = Modifier.height(48.dp)) { Text("Save to Guide") }
+        }
     } else {
         Text("SEARCH IN", style = MaterialTheme.typography.labelSmall, color = TextLo)
         Spacer(Modifier.height(8.dp))
@@ -426,6 +436,52 @@ fun ColumnScope.PhotosSheet(hub: TvHub, tv: TvState) {
                     }
                 }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Guide
+
+@Composable
+fun ColumnScope.GuideSheet(hub: TvHub, tv: TvState, onDone: () -> Unit) {
+    var url by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    val clipboard = LocalClipboardManager.current
+    val address = remember { hub.guideAddress() }
+
+    Text("Add to Guide", style = MaterialTheme.typography.headlineSmall)
+    Text(
+        "Paste a link to a show, movie, YouTube video or channel. Tapping it later jumps straight to it on ${tv.config.name}.",
+        color = TextLo, style = MaterialTheme.typography.bodySmall,
+    )
+    Spacer(Modifier.height(14.dp))
+    OutlinedTextField(
+        value = url, onValueChange = { url = it; error = null }, singleLine = true, shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth(), placeholder = { Text("https://www.netflix.com/title/…", color = TextLo) },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
+        trailingIcon = { TextButton(onClick = { clipboard.getText()?.text?.let { url = it.trim() } }) { Text("Paste", color = Pink) } },
+    )
+    Spacer(Modifier.height(8.dp))
+    OutlinedTextField(
+        value = name, onValueChange = { name = it }, singleLine = true, shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth(), placeholder = { Text("Name (optional — filled in automatically)", color = TextLo) },
+    )
+    error?.let { Text(it, color = DimAmber, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp)) }
+    Spacer(Modifier.height(14.dp))
+    GlowButton("Add to Guide", Modifier.fillMaxWidth(), enabled = url.isNotBlank()) {
+        if (hub.addGuide(url, name.trim().ifEmpty { null })) onDone() else error = "That doesn't look like a link."
+    }
+    if (address != null) {
+        Spacer(Modifier.height(18.dp))
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(PanelHi).padding(14.dp)) {
+            Text("ADD FROM YOUR OWN PHONE OR COMPUTER", style = MaterialTheme.typography.labelSmall, color = TextLo)
+            Spacer(Modifier.height(6.dp))
+            Text(address, style = MaterialTheme.typography.titleMedium, color = Peach)
+            Text(
+                "Open this on any device on your Wi‑Fi, then paste links there. In Netflix, YouTube, Disney+ and most apps: Share → Copy link.",
+                style = MaterialTheme.typography.bodySmall, color = TextLo,
+            )
         }
     }
 }

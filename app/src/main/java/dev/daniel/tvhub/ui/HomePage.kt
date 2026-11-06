@@ -9,7 +9,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridItemSpanScope
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
@@ -19,6 +23,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -37,6 +42,7 @@ import coil.compose.AsyncImage
 import dev.daniel.tvhub.BuildConfig
 import dev.daniel.tvhub.core.AppNames
 import dev.daniel.tvhub.core.Conn
+import dev.daniel.tvhub.core.GuideItem
 import dev.daniel.tvhub.core.Keys
 import dev.daniel.tvhub.core.Power
 import dev.daniel.tvhub.core.TvApp
@@ -45,23 +51,31 @@ import dev.daniel.tvhub.core.TvState
 import java.io.File
 import kotlin.math.abs
 
-/** One TV's home: what's on, a big search box, and its apps as tiles. */
+/** One TV's home: what's on, search, favorites, your guide, then every app. */
 @Composable
-fun HomePage(hub: TvHub, tv: TvState, onSearch: () -> Unit, onVoice: () -> Unit) {
+fun HomePage(hub: TvHub, tv: TvState, onSearch: () -> Unit, onVoice: () -> Unit, onAddGuide: () -> Unit) {
     val id = tv.config.id
     val appsMap by hub.apps.collectAsStateWithLifecycle()
     val pinsMap by hub.pins.collectAsStateWithLifecycle()
     val usageMap by hub.usageByTv.collectAsStateWithLifecycle()
+    val guide by hub.guide.collectAsStateWithLifecycle()
     val online = tv.conn == Conn.ONLINE
     LaunchedEffect(id, online, tv.receiverVersion) { if (online) hub.ensureApps(id) }
 
+    var editing by rememberSaveable(id) { mutableStateOf(false) }
+    var removeGuide by remember { mutableStateOf<GuideItem?>(null) }
+
     val st = appsMap[id]
-    val pins = pinsMap[id] ?: emptySet()
-    val ordered = remember(st?.apps, pins, usageMap[id]) {
-        hub.ordered(id, st?.apps ?: emptyList(), pins, usageMap[id] ?: emptyMap())
+    val pins = pinsMap[id] ?: emptyList()
+    val byPkg = remember(st?.apps) { st?.apps?.associateBy { it.packageName } ?: emptyMap() }
+    val favorites = remember(pins, byPkg) { pins.mapNotNull { byPkg[it] } }
+    val ordered = remember(st?.apps, pins, usageMap[id], editing) {
+        hub.ordered(id, st?.apps ?: emptyList(), if (editing) emptyList() else pins, usageMap[id] ?: emptyMap())
+            .filter { editing || it.packageName !in pins }
     }
     val current = st?.apps?.firstOrNull { it.packageName == tv.now?.packageName }
     val helperMissing = online && (tv.receiverVersion ?: 0) < BuildConfig.VERSION_CODE && tv.receiverVersion != null
+    val full: LazyGridItemSpanScope.() -> GridItemSpan = { GridItemSpan(maxLineSpan) }
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
@@ -70,17 +84,77 @@ fun HomePage(hub: TvHub, tv: TvState, onSearch: () -> Unit, onVoice: () -> Unit)
         verticalArrangement = Arrangement.spacedBy(14.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
-        item(span = { GridItemSpan(maxLineSpan) }) { NowPlayingHero(hub, tv, current) }
-        item(span = { GridItemSpan(maxLineSpan) }) { SearchPill(tv.config.name, onSearch, onVoice) }
-        if (helperMissing) {
-            item(span = { GridItemSpan(maxLineSpan) }) { SetupCard(hub, tv) }
-        }
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
-                Column(Modifier.weight(1f)) {
-                    Text("Apps", style = MaterialTheme.typography.titleLarge)
-                    Text("Tap to open · hold to pin", style = MaterialTheme.typography.bodySmall, color = TextLo)
+        item(key = "hero", span = full) { NowPlayingHero(hub, tv, current) }
+        item(key = "search", span = full) { SearchPill(tv.config.name, onSearch, onVoice) }
+        if (helperMissing) item(key = "setup", span = full) { SetupCard(hub, tv) }
+
+        // ----- Favorites
+        item(key = "favHead", span = full) {
+            SectionHead(
+                "Favorites",
+                if (editing) "Tap ☆ on any app below to add or remove it" else "Your go-to apps on ${tv.config.name}",
+            ) {
+                TextButton(onClick = { editing = !editing }) {
+                    Text(if (editing) "Done" else "Edit", color = if (editing) Pink else TextLo, fontWeight = FontWeight.Bold)
                 }
+            }
+        }
+        item(key = "favRow", span = full) {
+            if (favorites.isEmpty()) {
+                DashedCard(
+                    if (editing) "Tap the ☆ on apps below to make them favorites" else "Pick your favorite apps",
+                    "They'll sit right here, one tap away.",
+                ) { editing = true }
+            } else {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(end = 8.dp)) {
+                    itemsIndexed(favorites, key = { _, a -> a.packageName }) { i, app ->
+                        Box(Modifier.width(250.dp)) {
+                            AppTile(
+                                app, isOpen = tv.now?.packageName == app.packageName && tv.power != Power.OFF,
+                                pinned = false, editing = false, enabled = online,
+                                onClick = { hub.launchApp(id, app) }, onLongClick = { editing = true },
+                            )
+                            if (editing) {
+                                Row(Modifier.align(Alignment.TopEnd).padding(6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    if (i > 0) MiniButton("◀") { hub.movePin(id, app.packageName, -1) }
+                                    if (i < favorites.size - 1) MiniButton("▶") { hub.movePin(id, app.packageName, 1) }
+                                    MiniButton("✕") { hub.togglePin(id, app.packageName) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ----- Guide
+        item(key = "guideHead", span = full) {
+            SectionHead("Guide", "Jump straight into a show or video") {
+                TextButton(onClick = onAddGuide) { Text("+ Add", color = Pink, fontWeight = FontWeight.Bold) }
+            }
+        }
+        item(key = "guideRow", span = full) {
+            if (guide.isEmpty()) {
+                DashedCard("Save shows, movies and videos", "Paste a Netflix, YouTube, Disney+ or Prime link. One tap plays it on the TV.", onAddGuide)
+            } else {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(end = 8.dp)) {
+                    items(guide, key = { it.id }) { g ->
+                        GuideCard(g, enabled = online, onClick = { hub.playGuide(id, g) }, onLongClick = { removeGuide = g })
+                    }
+                    item(key = "add") {
+                        Box(
+                            Modifier.width(120.dp).aspectRatio(16f / 13f).clip(RoundedCornerShape(18.dp)).background(PanelHi)
+                                .border(1.dp, Line, RoundedCornerShape(18.dp)).clickable(onClick = onAddGuide),
+                            contentAlignment = Alignment.Center,
+                        ) { Text("+ Add", color = TextLo, fontWeight = FontWeight.Bold) }
+                    }
+                }
+            }
+        }
+
+        // ----- All apps
+        item(key = "appsHead", span = full) {
+            SectionHead("All apps", if (editing) "Tap to add to favorites" else "Tap to open · hold to favorite") {
                 if (st?.loading == true) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Pink)
                 else IconButton(onClick = { hub.loadApps(id) }, enabled = online) {
                     Icon(Icons.Default.Refresh, contentDescription = "Refresh apps", tint = TextLo)
@@ -88,11 +162,11 @@ fun HomePage(hub: TvHub, tv: TvState, onSearch: () -> Unit, onVoice: () -> Unit)
             }
         }
         when {
-            st == null && !online -> item(span = { GridItemSpan(maxLineSpan) }) {
+            st == null && !online -> item(span = full) {
                 Text("Apps show up here once ${tv.config.name} is connected.", color = TextLo, modifier = Modifier.padding(vertical = 24.dp))
             }
             st == null || (st.loading && st.apps.isEmpty()) -> items(6) { PlaceholderTile() }
-            st.apps.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
+            st.apps.isEmpty() -> item(span = full) {
                 Text(st.error ?: "No apps found.", color = TextLo, modifier = Modifier.padding(vertical = 24.dp))
             }
             else -> items(ordered, key = { it.packageName }) { app ->
@@ -100,12 +174,92 @@ fun HomePage(hub: TvHub, tv: TvState, onSearch: () -> Unit, onVoice: () -> Unit)
                     app = app,
                     isOpen = tv.now?.packageName == app.packageName && tv.power != Power.OFF,
                     pinned = app.packageName in pins,
-                    enabled = online,
-                    onClick = { hub.launchApp(id, app) },
+                    editing = editing,
+                    enabled = online || editing,
+                    onClick = { if (editing) hub.togglePin(id, app.packageName) else hub.launchApp(id, app) },
                     onLongClick = { hub.togglePin(id, app.packageName) },
                 )
             }
         }
+    }
+
+    removeGuide?.let { g ->
+        AlertDialog(
+            onDismissRequest = { removeGuide = null },
+            containerColor = PanelHi,
+            title = { Text(g.title) },
+            text = { Text(g.url, color = TextLo, maxLines = 3, overflow = TextOverflow.Ellipsis) },
+            confirmButton = { TextButton(onClick = { hub.removeGuide(g.id); removeGuide = null }) { Text("Remove", color = OfflineRed) } },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { hub.moveGuideToFront(g.id); removeGuide = null }) { Text("Move to front") }
+                    TextButton(onClick = { removeGuide = null }) { Text("Cancel") }
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun SectionHead(title: String, subtitle: String, trailing: @Composable () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleLarge)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = TextLo)
+        }
+        trailing()
+    }
+}
+
+@Composable
+private fun DashedCard(title: String, body: String, onClick: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Panel)
+            .border(1.5.dp, Brush.linearGradient(listOf(Violet.copy(alpha = 0.6f), Pink.copy(alpha = 0.6f))), RoundedCornerShape(20.dp))
+            .clickable(onClick = onClick).padding(18.dp),
+    ) {
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        Text(body, style = MaterialTheme.typography.bodySmall, color = TextLo)
+    }
+}
+
+@Composable
+private fun MiniButton(label: String, onClick: () -> Unit) {
+    Box(
+        Modifier.size(30.dp).clip(CircleShape).background(Ink.copy(alpha = 0.8f)).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { Text(label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+}
+
+@Composable
+private fun GuideCard(g: GuideItem, enabled: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    Column(
+        Modifier.width(220.dp).combinedClickable(
+            enabled = enabled,
+            onClick = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() },
+            onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onLongClick() },
+        ),
+    ) {
+        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(18.dp)).background(Brush.linearGradient(listOf(PanelHi, Panel)))) {
+            if (g.image != null) {
+                AsyncImage(model = g.image, contentDescription = g.title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            } else {
+                Text(g.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.align(Alignment.Center).padding(12.dp), maxLines = 2)
+            }
+            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Transparent, Ink.copy(alpha = 0.7f)))))
+            Box(
+                Modifier.align(Alignment.Center).size(46.dp).clip(CircleShape).background(Ink.copy(alpha = 0.55f)),
+                contentAlignment = Alignment.Center,
+            ) { Icon(HubIcons.Play, contentDescription = "Play", tint = Color.White, modifier = Modifier.size(26.dp)) }
+            g.service?.let {
+                Text(
+                    it.uppercase(), style = MaterialTheme.typography.labelSmall, color = Color.White,
+                    modifier = Modifier.align(Alignment.BottomStart).padding(8.dp),
+                )
+            }
+        }
+        Text(g.title, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 4.dp, top = 6.dp))
     }
 }
 
@@ -218,7 +372,7 @@ fun GlowButton(label: String, modifier: Modifier = Modifier, enabled: Boolean = 
 private fun tileColor(pkg: String): Color = Color.hsv((abs(pkg.hashCode()) % 360).toFloat(), 0.55f, 0.5f)
 
 @Composable
-private fun AppTile(app: TvApp, isOpen: Boolean, pinned: Boolean, enabled: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
+private fun AppTile(app: TvApp, isOpen: Boolean, pinned: Boolean, editing: Boolean, enabled: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
     val haptic = LocalHapticFeedback.current
     val shape = RoundedCornerShape(18.dp)
     Column(
@@ -251,11 +405,17 @@ private fun AppTile(app: TvApp, isOpen: Boolean, pinned: Boolean, enabled: Boole
                     modifier = Modifier.align(Alignment.TopStart).padding(8.dp).clip(CircleShape).background(Glow).padding(horizontal = 8.dp, vertical = 3.dp),
                 )
             }
-            if (pinned) {
+            if (editing || pinned) {
                 Box(
-                    Modifier.align(Alignment.TopEnd).padding(6.dp).size(24.dp).clip(CircleShape).background(Ink.copy(alpha = 0.7f)),
+                    Modifier.align(Alignment.TopEnd).padding(6.dp).size(if (editing) 34.dp else 24.dp).clip(CircleShape)
+                        .background(if (pinned) Glow else Brush.linearGradient(listOf(Ink.copy(alpha = 0.75f), Ink.copy(alpha = 0.75f)))),
                     contentAlignment = Alignment.Center,
-                ) { Icon(HubIcons.Pin, contentDescription = "Pinned", tint = Peach, modifier = Modifier.size(14.dp)) }
+                ) {
+                    Icon(
+                        if (pinned) HubIcons.Star else HubIcons.StarOutline, contentDescription = if (pinned) "Favorite" else "Not a favorite",
+                        tint = Color.White, modifier = Modifier.size(if (editing) 20.dp else 14.dp),
+                    )
+                }
             }
         }
         Text(app.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 4.dp, top = 6.dp))

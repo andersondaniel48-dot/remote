@@ -13,8 +13,8 @@ android {
         minSdk = 24
         targetSdk = 35
         // Bump versionCode when you change the app: TV Hub then offers to update its player on each TV.
-        versionCode = 2
-        versionName = "2.0"
+        versionCode = 3
+        versionName = "3.0"
     }
 
     // A fixed key (checked in) so every build can update the phone and TVs in place.
@@ -29,8 +29,11 @@ android {
 
     buildTypes {
         debug { signingConfig = signingConfigs.getByName("debug") }
+        // Optimized build (R8): much smoother on an old phone than the debug build.
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("debug")
         }
     }

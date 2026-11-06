@@ -37,6 +37,22 @@ class MainActivity : ComponentActivity() {
         setContent {
             TvHubTheme { HubScreen(hub = hub, activity = this) }
         }
+        handleShare(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleShare(intent)
+    }
+
+    /** "Share → TV Hub" from a browser or streaming app saves the link to the Guide. */
+    private fun handleShare(i: Intent?) {
+        if (i?.action != Intent.ACTION_SEND) return
+        val text = i.getStringExtra(Intent.EXTRA_TEXT) ?: return
+        if (!hub.addGuide(text, i.getStringExtra(Intent.EXTRA_SUBJECT))) {
+            android.widget.Toast.makeText(this, "No link found to save", android.widget.Toast.LENGTH_SHORT).show()
+        }
+        i.action = null
     }
 
     override fun onResume() {
