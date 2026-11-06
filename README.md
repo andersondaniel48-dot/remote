@@ -10,6 +10,17 @@ TV Hub turns an old Android phone into a remote and control panel for your TVs. 
 
 The phone talks to the TVs over Wi‑Fi using Android's developer connection (ADB). You don't need a computer or any account for that part.
 
+## Using it
+
+- **Switch TVs:** tap a TV's name at the top, or swipe left or right.
+- **See what's on:** the big card at the top shows the open app, the title and whether it's playing, with play/pause, skip and volume buttons.
+- **Search:** tap the search bar, or the mic to speak. Choose **Everywhere** or a specific app (YouTube, Netflix…). When the search is on the TV, the touchpad opens so you can pick a result.
+- **Open apps:** tap a tile. Hold a tile to pin it to the front. The apps you use most move up on their own.
+- **Remote:** the button at the bottom opens a touchpad. Swipe to move, tap to select, hold for the menu. Switch to **Buttons** if you'd rather have arrows.
+- **Volume:** the phone's own volume buttons control the selected TV.
+- **Type** and **Photos** are in the bottom dock.
+- **Real app tiles:** the first time, each TV shows a **Set up** card. Tap it once and TV Hub installs a small helper on that TV, which gives you the TV's own app artwork and photo casting.
+
 ---
 
 ## 1. Turn on ADB debugging on each TV (one time)
