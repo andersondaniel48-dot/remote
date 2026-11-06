@@ -36,6 +36,13 @@ data class TvState(
     val firstConnectStartedAt: Long = 0L,
 )
 
-data class TvApp(val packageName: String, val component: String?, val name: String)
+data class TvApp(
+    val packageName: String,
+    val component: String?,
+    val name: String,
+    /** Local file paths of the TV's own artwork for this app (from the TV Hub helper), if any. */
+    val banner: String? = null,
+    val icon: String? = null,
+)
 
-data class AppsState(val loading: Boolean = false, val apps: List<TvApp> = emptyList(), val error: String? = null)
+data class AppsState(val loading: Boolean = false, val apps: List<TvApp> = emptyList(), val error: String? = null, val hasArtwork: Boolean = false)

@@ -49,8 +49,9 @@ fun SettingsScreen(hub: TvHub, activity: MainActivity, onClose: () -> Unit) {
     val locked = remember(tick) { Kiosk.isLocked(activity) }
     val owner = remember(tick) { Kiosk.isDeviceOwner(activity) }
     var keepOn by remember { mutableStateOf(hub.store.keepScreenOnWhileCharging) }
+    var volKeys by remember { mutableStateOf(hub.store.volumeKeysControlTv) }
 
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+    Surface(Modifier.fillMaxSize(), color = Ink) {
         Column(Modifier.safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (tvs.isNotEmpty()) IconButton(onClick = onClose) { Icon(Icons.Default.ArrowBack, contentDescription = "Back") }
@@ -145,6 +146,11 @@ fun SettingsScreen(hub: TvHub, activity: MainActivity, onClose: () -> Unit) {
                 keepOn = on
                 hub.store.keepScreenOnWhileCharging = on
                 activity.refreshKeepOn()
+            }
+
+            SwitchRow("Phone volume buttons control the TV", "Turns the selected TV up and down.", volKeys) { on ->
+                volKeys = on
+                hub.store.volumeKeysControlTv = on
             }
 
             HorizontalDivider()

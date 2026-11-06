@@ -64,6 +64,34 @@ object AppNames {
         return pick.replace('_', ' ').replaceFirstChar { it.uppercase() }
     }
 
+    private val popular = listOf(
+        "com.netflix.ninja", "com.netflix.mediaclient",
+        "com.google.android.youtube.tv", "com.amazon.firetv.youtube",
+        "com.amazon.firebat", "com.amazon.amazonvideo.livingroom", "com.amazon.avod.thirdpartyclient",
+        "com.disney.disneyplus", "com.wbd.stream", "com.hbo.hbonow", "com.hulu.livingroomplus", "com.hulu.plus",
+        "com.google.android.youtube.tvunplugged", "com.amazon.firetv.youtube.tv",
+        "com.apple.atve.amazon.appletv", "com.apple.atve.androidtv.appletv", "com.peacocktv.peacockandroid", "com.cbs.ott",
+        "com.google.android.youtube.tvkids", "com.amazon.firetv.youtube.kids", "com.spotify.tv.android",
+        "com.plexapp.android", "tv.pluto.android", "tv.twitch.android.app", "com.crunchyroll.crunchyroid",
+    )
+    private val utility = setOf(
+        "com.android.tv.settings", "com.amazon.tv.settings.v2", "com.amazon.tv.settings", "com.amazon.venezia",
+        "com.android.vending", "com.google.android.katniss", "com.amazon.vizzini", "com.android.settings",
+        "com.google.android.tv.remote.service", "com.android.documentsui", "com.amazon.tv.screensaver",
+    )
+
+    /** Lower = earlier in the grid when you haven't used or pinned anything yet. */
+    fun rank(packageName: String): Int {
+        val i = popular.indexOf(packageName)
+        return when {
+            i >= 0 -> i
+            packageName in utility -> 10_000
+            else -> 1_000
+        }
+    }
+
+    fun isUtility(packageName: String) = packageName in utility
+
     fun isHome(packageName: String?) = packageName in setOf(
         "com.amazon.tv.launcher", "com.google.android.apps.tv.launcherx", "com.google.android.tvlauncher",
     )

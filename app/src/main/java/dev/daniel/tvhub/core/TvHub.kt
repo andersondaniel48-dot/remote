@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -103,6 +104,8 @@ class TvHub(private val ctx: Context) {
     }
 
     fun removeTv(id: String) {
+        store.forgetTv(id)
+        runCatching { File(ctx.filesDir, "art/$id").deleteRecursively() }
         pollers.remove(id)?.cancel()
         conns.remove(id)?.close()
         _tvs.update { list -> list.filterNot { it.config.id == id } }
@@ -201,7 +204,32 @@ class TvHub(private val ctx: Context) {
 
     // ---------- remote ----------
 
-    fun key(id: String, code: Int) = act(id) { it.key(code) }
+    private val keyQueues = ConcurrentHashMap<String, Channel<Int>>()
+
+    /**
+     * Sends a key press. Presses that arrive close together (fast touchpad swipes) are batched
+     * into one `input keyevent a b c` call, which is much quicker than one call per press.
+     */
+    fun key(id: String, code: Int) {
+        val ch = keyQueues.getOrPut(id) { Channel<Int>(Channel.UNLIMITED).also { startKeyPump(id, it) } }
+        ch.trySend(code)
+    }
+
+    private fun startKeyPump(id: String, ch: Channel<Int>) = scope.launch {
+        for (first in ch) {
+            val batch = mutableListOf(first)
+            delay(35)
+            while (batch.size < 12) batch += ch.tryReceive().getOrNull() ?: break
+            val c = conn(id) ?: continue
+            try {
+                c.shell("input keyevent " + batch.joinToString(" "))
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                _messages.tryEmit("${state(id)?.config?.name ?: "TV"}: ${friendly(t)}")
+            }
+            refresh(id)
+        }
+    }
 
     fun text(id: String, s: String) {
         if (s.isEmpty()) return
@@ -215,30 +243,61 @@ class TvHub(private val ctx: Context) {
 
     // ---------- apps ----------
 
+    private val _pins = MutableStateFlow(_tvs.value.associate { it.config.id to store.pins(it.config.id) })
+    val pins: StateFlow<Map<String, Set<String>>> = _pins.asStateFlow()
+
+    private val _usage = MutableStateFlow(_tvs.value.associate { it.config.id to store.usage(it.config.id) })
+    val usageByTv: StateFlow<Map<String, Map<String, Int>>> = _usage.asStateFlow()
+
+    private val _recentSearches = MutableStateFlow(store.recentSearches())
+    val recentSearches: StateFlow<List<String>> = _recentSearches.asStateFlow()
+
+    init {
+        // Show cached app tiles instantly on start.
+        _apps.value = _tvs.value.associate { t ->
+            val id = t.config.id
+            id to AppsState(apps = store.loadCatalog(id), hasArtwork = store.catalogHasArtwork(id))
+        }.filterValues { it.apps.isNotEmpty() }
+    }
+
+    fun togglePin(id: String, pkg: String) {
+        val cur = _pins.value[id] ?: emptySet()
+        val next = if (pkg in cur) cur - pkg else cur + pkg
+        store.setPins(id, next)
+        _pins.update { it + (id to next) }
+    }
+
+    /** Pinned first, then most used, then popular streaming apps, then A–Z. Settings-type apps last. */
+    fun ordered(id: String, apps: List<TvApp>, pins: Set<String>, usage: Map<String, Int>): List<TvApp> =
+        apps.sortedWith(
+            compareBy<TvApp>(
+                { if (it.packageName in pins) 0 else 1 },
+                { if (AppNames.isUtility(it.packageName)) 1 else 0 },
+                { -(usage[it.packageName] ?: 0) },
+                { AppNames.rank(it.packageName) },
+                { it.name.lowercase() },
+            ),
+        )
+
+    /** Refreshes the app list if it's missing, stale (a day old), or the helper was just installed. */
+    fun ensureApps(id: String) {
+        val st = _apps.value[id]
+        val stale = store.catalogAge(id) > 24 * 3600_000L
+        val upgrade = st != null && !st.hasArtwork && receiverReady(id)
+        if (st == null || stale || upgrade) loadApps(id)
+    }
+
     fun loadApps(id: String) {
         val c = conn(id) ?: return
+        if (_apps.value[id]?.loading == true) return
         _apps.update { it + (id to (it[id] ?: AppsState()).copy(loading = true, error = null)) }
         scope.launch {
             try {
-                val found = linkedMapOf<String, String?>()
-                for (cat in listOf("android.intent.category.LEANBACK_LAUNCHER", "android.intent.category.LAUNCHER")) {
-                    val out = runCatching {
-                        c.shell("cmd package query-activities --brief -a android.intent.action.MAIN -c $cat")
-                    }.getOrDefault("")
-                    var parsed = TvParsers.parseLaunchables(out)
-                    if (parsed.isEmpty()) {
-                        parsed = TvParsers.parseLaunchables(c.shell("cmd package query-activities -a android.intent.action.MAIN -c $cat"))
-                    }
-                    parsed.forEach { (pkg, comp) -> if (pkg !in found) found[pkg] = comp }
-                }
-                if (found.isEmpty()) {
-                    TvParsers.parsePackageList(c.shell("pm list packages -3")).forEach { found[it] = null }
-                }
-                val apps = found
-                    .filterKeys { it != BuildConfig.APPLICATION_ID && !AppNames.isHome(it) }
-                    .map { (pkg, comp) -> TvApp(pkg, comp, AppNames.of(pkg)) }
-                    .sortedBy { it.name.lowercase() }
-                _apps.update { it + (id to AppsState(loading = false, apps = apps)) }
+                val withArt = if (receiverReady(id)) runCatching { fetchCatalog(id, c) }.getOrNull() else null
+                val apps = withArt ?: listFromShell(c)
+                val filtered = apps.filter { it.packageName != BuildConfig.APPLICATION_ID && !AppNames.isHome(it.packageName) }
+                store.saveCatalog(id, filtered, withArt != null)
+                _apps.update { it + (id to AppsState(loading = false, apps = filtered, hasArtwork = withArt != null)) }
             } catch (t: Throwable) {
                 if (t is kotlinx.coroutines.CancellationException) throw t
                 _apps.update { it + (id to (it[id] ?: AppsState()).copy(loading = false, error = friendly(t))) }
@@ -246,7 +305,73 @@ class TvHub(private val ctx: Context) {
         }
     }
 
-    fun launchApp(id: String, app: TvApp) = act(id) { c ->
+    private suspend fun listFromShell(c: TvConnection): List<TvApp> {
+        val found = linkedMapOf<String, String?>()
+        for (cat in listOf("android.intent.category.LEANBACK_LAUNCHER", "android.intent.category.LAUNCHER")) {
+            val out = runCatching {
+                c.shell("cmd package query-activities --brief -a android.intent.action.MAIN -c $cat")
+            }.getOrDefault("")
+            var parsed = TvParsers.parseLaunchables(out)
+            if (parsed.isEmpty()) {
+                parsed = TvParsers.parseLaunchables(c.shell("cmd package query-activities -a android.intent.action.MAIN -c $cat"))
+            }
+            parsed.forEach { (pkg, comp) -> if (pkg !in found) found[pkg] = comp }
+        }
+        if (found.isEmpty()) {
+            TvParsers.parsePackageList(c.shell("pm list packages -3")).forEach { found[it] = null }
+        }
+        return found.map { (pkg, comp) -> TvApp(pkg, comp, AppNames.of(pkg)) }
+    }
+
+    /** Asks the TV Hub helper on the TV for real app names + artwork, then saves the images on the phone. */
+    private suspend fun fetchCatalog(id: String, c: TvConnection): List<TvApp>? {
+        val pkg = BuildConfig.APPLICATION_ID
+        val ext = "/sdcard/Android/data/$pkg/files/catalog.json"
+        c.shell("rm -f $ext; run-as $pkg rm -f files/catalog.json 2>/dev/null; " +
+            "am broadcast -n $pkg/$pkg.tv.AppCatalogReceiver -f 0x10000020")
+        repeat(30) {
+            delay(600)
+            val t = c.shell("cat $ext 2>/dev/null || run-as $pkg cat files/catalog.json 2>/dev/null").trim()
+            if (t.startsWith("[") && t.endsWith("]")) return saveArtwork(id, t)
+        }
+        return null
+    }
+
+    private fun saveArtwork(id: String, json: String): List<TvApp> {
+        val dir = File(ctx.filesDir, "art/$id")
+        dir.deleteRecursively()
+        dir.mkdirs()
+        val stamp = System.currentTimeMillis()
+        val arr = org.json.JSONArray(json)
+        return (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            val pkg = o.getString("pkg")
+            val safe = pkg.replace(Regex("[^A-Za-z0-9._]"), "_")
+            fun img(key: String, suffix: String): String? {
+                val b64 = o.optString(key).takeIf { it.isNotEmpty() && it != "null" } ?: return null
+                val f = File(dir, "${safe}_${stamp}_$suffix.webp")
+                return runCatching { f.writeBytes(android.util.Base64.decode(b64, android.util.Base64.NO_WRAP)); f.absolutePath }.getOrNull()
+            }
+            TvApp(
+                packageName = pkg,
+                component = o.optString("component").ifEmpty { null },
+                name = o.optString("label").ifEmpty { AppNames.of(pkg) },
+                banner = img("banner", "b"),
+                icon = img("icon", "i"),
+            )
+        }
+    }
+
+    fun launchApp(id: String, app: TvApp) {
+        val next = store.bumpUsage(id, app.packageName)
+        _usage.update { it + (id to next) }
+        act(id) { c ->
+            startApp(c, app)
+            say("Opening ${app.name} on ${state(id)?.config?.name}")
+        }
+    }
+
+    private suspend fun startApp(c: TvConnection, app: TvApp) {
         val viaComponent = app.component?.let { c.shell("am start -n ${TvParsers.q(it)}") }
         if (viaComponent == null || TvParsers.amFailed(viaComponent)) {
             val out = c.shell("monkey -p ${TvParsers.q(app.packageName)} -c android.intent.category.LEANBACK_LAUNCHER 1")
@@ -254,7 +379,51 @@ class TvHub(private val ctx: Context) {
                 c.shell("monkey -p ${TvParsers.q(app.packageName)} -c android.intent.category.LAUNCHER 1")
             }
         }
-        say("Opening ${app.name} on ${state(id)?.config?.name}")
+    }
+
+    // ---------- search ----------
+
+    fun clearSearches() { store.clearRecentSearches(); _recentSearches.value = emptyList() }
+
+    fun looksLikeLink(s: String) = normalizeUrl(s) != null && (s.contains("://") || Regex("^[\\w-]+(\\.[\\w-]+)+(/\\S*)?$").matches(s.trim()))
+
+    /**
+     * Searches on the TV. With no [app], uses the TV's own search (Google TV shows results for the
+     * query directly). With an app, opens it, presses the Search key and types the query.
+     */
+    fun search(id: String, query: String, app: TvApp?) {
+        val q = query.trim()
+        if (q.isEmpty()) return
+        store.addRecentSearch(q)
+        _recentSearches.value = store.recentSearches()
+        val name = state(id)?.config?.name ?: "TV"
+        app?.let { _usage.update { u -> u + (id to store.bumpUsage(id, it.packageName)) } }
+        act(id) { c ->
+            if (app == null) {
+                val out = c.shell("am start -a android.search.action.GLOBAL_SEARCH --es query ${TvParsers.q(q)}")
+                if (!TvParsers.amFailed(out)) { say("Searching “$q” on $name"); return@act }
+                c.key(Keys.SEARCH)
+                delay(1500)
+            } else {
+                val fg = TvParsers.parseForegroundPackage(c.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'"))
+                if (fg != app.packageName) {
+                    startApp(c, app)
+                    // Wait for the app to come to the front, then give it a moment to finish loading.
+                    for (i in 0 until 14) {
+                        delay(600)
+                        val now = TvParsers.parseForegroundPackage(c.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'"))
+                        if (now == app.packageName) break
+                    }
+                    delay(1800)
+                }
+                c.key(Keys.SEARCH)
+                delay(1300)
+            }
+            c.shell("input text ${TvParsers.inputText(q)}")
+            delay(250)
+            c.key(Keys.ENTER)
+            say(if (app == null) "Searching “$q” on $name" else "Searching ${app.name} for “$q”")
+        }
     }
 
     // ---------- links ----------
@@ -353,6 +522,7 @@ object Keys {
     const val ENTER = 66
     const val DEL = 67
     const val MENU = 82
+    const val SEARCH = 84
     const val PLAY_PAUSE = 85
     const val REWIND = 89
     const val FAST_FORWARD = 90

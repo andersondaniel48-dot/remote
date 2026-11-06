@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Bundle
+import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -14,6 +15,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import dev.daniel.tvhub.core.Keys
 import dev.daniel.tvhub.core.Kiosk
 import dev.daniel.tvhub.ui.HubScreen
 import dev.daniel.tvhub.ui.TvHubTheme
@@ -50,6 +52,24 @@ class MainActivity : ComponentActivity() {
         super.onPause()
         runCatching { unregisterReceiver(battery) }
         hub.stop()
+    }
+
+    /** The phone's volume buttons turn the selected TV up and down. */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if ((keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) && hub.store.volumeKeysControlTv) {
+            val tvs = hub.tvs.value
+            val id = tvs.firstOrNull { it.config.id == hub.store.selectedTv }?.config?.id ?: tvs.firstOrNull()?.config?.id
+            if (id != null) {
+                hub.key(id, if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) Keys.VOL_UP else Keys.VOL_DOWN)
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if ((keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) && hub.store.volumeKeysControlTv && hub.tvs.value.isNotEmpty()) return true
+        return super.onKeyUp(keyCode, event)
     }
 
     private fun updatePlugged(i: Intent) {

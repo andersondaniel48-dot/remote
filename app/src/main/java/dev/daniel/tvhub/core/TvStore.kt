@@ -47,6 +47,74 @@ class TvStore(context: Context) {
         prefs.edit().putString("links", JSONArray(recentLinks().filter { it != url }).toString()).apply()
     }
 
+    // ----- per-TV app catalog (names + artwork paths), pins and usage -----
+
+    fun loadCatalog(tvId: String): List<TvApp> {
+        val raw = prefs.getString("catalog_$tvId", null) ?: return emptyList()
+        return runCatching {
+            val a = JSONArray(raw)
+            (0 until a.length()).map { i ->
+                val o = a.getJSONObject(i)
+                TvApp(
+                    packageName = o.getString("pkg"),
+                    component = o.optString("component").ifEmpty { null },
+                    name = o.getString("name"),
+                    banner = o.optString("banner").ifEmpty { null },
+                    icon = o.optString("icon").ifEmpty { null },
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    fun saveCatalog(tvId: String, apps: List<TvApp>, hasArtwork: Boolean) {
+        val a = JSONArray()
+        apps.forEach {
+            a.put(JSONObject().put("pkg", it.packageName).put("component", it.component ?: "").put("name", it.name)
+                .put("banner", it.banner ?: "").put("icon", it.icon ?: ""))
+        }
+        prefs.edit().putString("catalog_$tvId", a.toString()).putBoolean("artwork_$tvId", hasArtwork)
+            .putLong("catalogAt_$tvId", System.currentTimeMillis()).apply()
+    }
+
+    fun catalogHasArtwork(tvId: String) = prefs.getBoolean("artwork_$tvId", false)
+    fun catalogAge(tvId: String) = System.currentTimeMillis() - prefs.getLong("catalogAt_$tvId", 0L)
+
+    fun pins(tvId: String): Set<String> = prefs.getStringSet("pins_$tvId", null)?.toSet() ?: emptySet()
+    fun setPins(tvId: String, pins: Set<String>) { prefs.edit().putStringSet("pins_$tvId", pins).apply() }
+
+    fun usage(tvId: String): Map<String, Int> {
+        val raw = prefs.getString("usage_$tvId", null) ?: return emptyMap()
+        return runCatching { JSONObject(raw).let { o -> o.keys().asSequence().associateWith { o.getInt(it) } } }.getOrDefault(emptyMap())
+    }
+
+    fun bumpUsage(tvId: String, pkg: String): Map<String, Int> {
+        val m = usage(tvId).toMutableMap()
+        m[pkg] = (m[pkg] ?: 0) + 1
+        prefs.edit().putString("usage_$tvId", JSONObject(m as Map<*, *>).toString()).apply()
+        return m
+    }
+
+    fun forgetTv(tvId: String) {
+        prefs.edit().remove("catalog_$tvId").remove("artwork_$tvId").remove("catalogAt_$tvId")
+            .remove("pins_$tvId").remove("usage_$tvId").apply()
+    }
+
+    fun recentSearches(): List<String> {
+        val raw = prefs.getString("searches", null) ?: return emptyList()
+        return runCatching { JSONArray(raw).let { a -> (0 until a.length()).map { a.getString(it) } } }.getOrDefault(emptyList())
+    }
+
+    fun addRecentSearch(q: String) {
+        val list = (listOf(q) + recentSearches().filter { !it.equals(q, ignoreCase = true) }).take(10)
+        prefs.edit().putString("searches", JSONArray(list).toString()).apply()
+    }
+
+    fun clearRecentSearches() { prefs.edit().remove("searches").apply() }
+
+    var volumeKeysControlTv: Boolean
+        get() = prefs.getBoolean("volKeys", true)
+        set(v) { prefs.edit().putBoolean("volKeys", v).apply() }
+
     var selectedTv: String?
         get() = prefs.getString("selected", null)
         set(v) { prefs.edit().putString("selected", v).apply() }
